@@ -1,0 +1,1624 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schemaläggningssystem med Inloggning</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        table { border-collapse: collapse; width: 100%; }
+        th, td { padding: 12px 8px; font-size: 0.8rem; text-align: center; }
+        th { background-color: #f9fafb; color: #6b7280; font-weight: 600; border-bottom: 1px solid #e5e7eb; }
+        td { border-bottom: 1px solid #f3f4f6; }
+        .modal-bg { background-color: rgba(0, 0, 0, 0.5); }
+        .sticky-col { position: sticky; left: 0; background-color: #fff; z-index: 10; border-right: 2px solid #e5e7eb; width: 120px; text-align: left; font-weight: bold; padding-left: 12px; color: #1e293b; }
+        @media (min-width: 768px) { .sticky-col { width: 150px; } }
+        .sticky-col th { z-index: 20; text-align: left; color: #1e293b; font-weight: bold; background-color: #fff; }
+        .sticky-row th { position: sticky; top: 0; z-index: 30; }
+        .table-container::-webkit-scrollbar { height: 10px; }
+        .table-container::-webkit-scrollbar-track { background: #f8fafc; border-radius: 4px; }
+        .table-container::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .table-container::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        @keyframes slideIn { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .animate-slide-in { animation: slideIn 0.3s ease-out forwards; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        const getSavedData = (key, initialData) => {
+            try {
+                const item = localStorage.getItem(key);
+                if (!item) return initialData;
+                let parsed = JSON.parse(item);
+                if (Array.isArray(initialData)) {
+                    if (!Array.isArray(parsed)) return initialData;
+                    parsed = parsed.filter(i => i !== null && typeof i === 'object');
+                }
+                return parsed;
+            } catch (error) {
+                console.error("Kunde inte läsa minnet för:", key, error);
+                return initialData;
+            }
+        };
+
+        const setSavedData = (key, data) => {
+            try {
+                localStorage.setItem(key, JSON.stringify(data));
+            } catch (error) {
+                console.warn("Kunde inte spara lokalt:", error);
+            }
+        };
+
+        const generateUniqueId = (prefix) => {
+            return prefix + '_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+        };
+
+        class ErrorBoundary extends React.Component {
+            constructor(props) {
+                super(props);
+                this.state = { hasError: false, error: null };
+            }
+            static getDerivedStateFromError(error) {
+                return { hasError: true, error };
+            }
+            render() {
+                if (this.state.hasError) {
+                    return (
+                        <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4 font-sans">
+                            <div className="bg-white p-8 rounded-lg shadow-2xl w-full max-w-lg text-center border-t-8 border-red-500">
+                                <h1 className="text-3xl font-black text-slate-800 mb-2">Oj, ett fel uppstod!</h1>
+                                <p className="text-gray-500 mb-6">Detta beror oftast på en krock med gammal testdata i din webbläsare.</p>
+                                <div className="bg-red-50 p-4 rounded text-[10px] text-left text-red-800 mb-6 overflow-auto max-h-32 font-mono border border-red-100">
+                                    {this.state.error?.toString()}
+                                </div>
+                                <button 
+                                    onClick={() => { localStorage.clear(); window.location.reload(); }}
+                                    className="bg-red-600 text-white font-bold py-3 px-6 rounded-lg shadow hover:bg-red-700 transition w-full"
+                                >
+                                    Reparera systemet (Nollställ databas)
+                                </button>
+                            </div>
+                        </div>
+                    );
+                }
+                return this.props.children;
+            }
+        }
+
+        const generateTimeOptions = () => {
+            const times = [];
+            for (let h = 0; h < 24; h++) {
+                for (let m = 0; m < 60; m += 15) {
+                    times.push(`${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`);
+                }
+            }
+            return times;
+        };
+        const TIME_OPTIONS = generateTimeOptions();
+
+        const calculateHours = (start, end) => {
+            if (!start || !end) return 0;
+            const [startH, startM] = start.split(':').map(Number);
+            const [endH, endM] = end.split(':').map(Number);
+            let h = endH - startH;
+            let m = endM - startM;
+            if (m < 0) { h -= 1; m += 60; }
+            if (h < 0) { h += 24; } 
+            return h + (m / 60);
+        };
+
+        const playNotificationSound = () => {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gainNode = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(500, ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(1000, ctx.currentTime + 0.1);
+                gainNode.gain.setValueAtTime(0.3, ctx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+                osc.connect(gainNode);
+                gainNode.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.5);
+            } catch (e) {}
+        };
+
+        const INITIAL_USERS = [
+            { id: 'u1', name: 'Tommy Larsson', username: 'tommyl', email: 'tommy@test.se', password: '123', role: 'Admin', color: 'bg-indigo-50 text-indigo-800 border-indigo-200' },
+            { id: 'u2', name: 'David', username: 'david', email: 'david@test.se', password: '123', role: 'Personal', color: 'bg-blue-50 text-blue-800 border-blue-200' },
+            { id: 'u3', name: 'Justina', username: 'justina', email: 'justina@test.se', password: '123', role: 'Personal', color: 'bg-red-50 text-red-800 border-red-200' },
+            { id: 'u4', name: 'Naomi', username: 'naomi', email: 'naomi@test.se', password: '123', role: 'Personal', color: 'bg-green-50 text-green-800 border-green-200' },
+        ];
+
+        const INITIAL_TEMPLATE_SHIFTS = [
+            { id: 't1', cycleWeek: 1, dayOfWeek: 1, start: '09:00', end: '16:00', userId: 'u2' },
+            { id: 't2', cycleWeek: 1, dayOfWeek: 2, start: '16:00', end: '22:00', userId: 'u2' },
+            { id: 't3', cycleWeek: 1, dayOfWeek: 3, start: '10:00', end: '16:00', userId: 'u2' },
+            { id: 't4', cycleWeek: 1, dayOfWeek: 6, start: '17:00', end: '23:00', userId: 'u2' },
+            { id: 't5', cycleWeek: 2, dayOfWeek: 1, start: '09:00', end: '16:00', userId: 'u2' },
+            { id: 't6', cycleWeek: 2, dayOfWeek: 2, start: '16:00', end: '22:00', userId: 'u2' },
+            { id: 't7', cycleWeek: 2, dayOfWeek: 3, start: '10:00', end: '16:00', userId: 'u2' },
+            { id: 't8', cycleWeek: 2, dayOfWeek: 6, start: '17:00', end: '23:00', userId: 'u2' },
+            { id: 't10', cycleWeek: 1, dayOfWeek: 1, start: '16:00', end: '22:00', userId: 'u3' },
+            { id: 't11', cycleWeek: 1, dayOfWeek: 4, start: '16:00', end: '22:00', userId: 'u3' },
+            { id: 't12', cycleWeek: 1, dayOfWeek: 6, start: '13:00', end: '19:00', userId: 'u3' },
+            { id: 't13', cycleWeek: 2, dayOfWeek: 6, start: '17:00', end: '23:00', userId: 'u3' },
+            { id: 't14', cycleWeek: 2, dayOfWeek: 7, start: '13:00', end: '19:00', userId: 'u3' },
+            { id: 't20', cycleWeek: 1, dayOfWeek: 5, start: '17:00', end: '23:00', userId: 'u4' },
+            { id: 't21', cycleWeek: 1, dayOfWeek: 7, start: '13:00', end: '19:00', userId: 'u4' },
+            { id: 't22', cycleWeek: 2, dayOfWeek: 1, start: '16:00', end: '22:00', userId: 'u4' },
+            { id: 't23', cycleWeek: 2, dayOfWeek: 4, start: '16:00', end: '22:00', userId: 'u4' },
+            { id: 't24', cycleWeek: 2, dayOfWeek: 6, start: '13:00', end: '19:00', userId: 'u4' },
+        ];
+
+        const INITIAL_ROUTINES = [
+            { id: 'r1', title: 'Öppningsrutiner', content: '1. Lås upp entrédörren och larma av (kod: 1234).\n2. Starta alla kassasystem och kontrollera kvittorullar.\n3. Koka kaffe och ställ fram mjölk.\n4. Ställ ut gatuskylten innan öppning.', timestamp: '2026-05-22 08:00' },
+            { id: 'r2', title: 'Stängningsrutiner', content: '1. Lås dörren exakt vid stängning.\n2. Skriv ut dagsavslut från kassan och lägg i kassan.\n3. Släng alla sopor och torka av ytor.\n4. Larma på (kod: 1234) och känn på dörren så den är låst.', timestamp: '2026-05-22 08:00' }
+        ];
+
+        const getWeekNumber = (date) => {
+            const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+            const dayNum = d.getUTCDay() || 7;
+            d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+            const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+            return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+        };
+
+        const formatDateStr = (date) => {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const getMonthName = (date) => {
+            const months = ["Januari", "Februari", "Mars", "April", "Maj", "Juni", "Juli", "Augusti", "September", "Oktober", "November", "December"];
+            return months[date.getMonth()];
+        };
+
+        const dayNamesShort = ["M", "T", "O", "T", "F", "L", "S"];
+        const dayNamesFull = ["Måndag", "Tisdag", "Onsdag", "Torsdag", "Fredag", "Lördag", "Söndag"];
+
+        function App() {
+            const [users, setUsers] = useState(() => getSavedData('atla_users', INITIAL_USERS));
+            const [templateShifts, setTemplateShifts] = useState(() => getSavedData('atla_templates', INITIAL_TEMPLATE_SHIFTS));
+            const [actualShifts, setActualShifts] = useState(() => getSavedData('atla_actuals', []));
+            const [tradeRequests, setTradeRequests] = useState(() => getSavedData('atla_trades', []));
+            const [logs, setLogs] = useState(() => getSavedData('atla_logs', []));
+            const [messages, setMessages] = useState(() => getSavedData('atla_messages', []));
+            const [routines, setRoutines] = useState(() => getSavedData('atla_routines', INITIAL_ROUTINES));
+            const [leaves, setLeaves] = useState(() => getSavedData('atla_leaves', []));
+
+            useEffect(() => { setSavedData('atla_users', users); }, [users]);
+            useEffect(() => { setSavedData('atla_templates', templateShifts); }, [templateShifts]);
+            useEffect(() => { setSavedData('atla_actuals', actualShifts); }, [actualShifts]);
+            useEffect(() => { setSavedData('atla_trades', tradeRequests); }, [tradeRequests]);
+            useEffect(() => { setSavedData('atla_logs', logs); }, [logs]);
+            useEffect(() => { setSavedData('atla_messages', messages); }, [messages]);
+            useEffect(() => { setSavedData('atla_routines', routines); }, [routines]);
+            useEffect(() => { setSavedData('atla_leaves', leaves); }, [leaves]);
+
+            const [currentUser, setCurrentUser] = useState(null); 
+            const isAdmin = currentUser && currentUser.role === 'Admin';
+            const [loginData, setLoginData] = useState({ username: '', password: '' });
+            const [loginError, setLoginError] = useState('');
+            
+            const [showUserMenu, setShowUserMenu] = useState(false);
+            const [showForgotForm, setShowForgotForm] = useState(false);
+            const [forgotEmail, setForgotEmail] = useState('');
+            const [forgotMessage, setForgotMessage] = useState('');
+            const [forgotError, setForgotError] = useState('');
+
+            const [cycleWeeks, setCycleWeeks] = useState(4); 
+            const [activeTab, setActiveTab] = useState('veckoschema'); 
+            const [currentWeekStart, setCurrentWeekStart] = useState(new Date()); 
+            
+            const [showUserModal, setShowUserModal] = useState(false);
+            const [showTemplateModal, setShowTemplateModal] = useState(false);
+            const [showActualShiftModal, setShowActualShiftModal] = useState(false);
+            const [showPasswordModal, setShowPasswordModal] = useState(false);
+            const [showTradeModal, setShowTradeModal] = useState(false); 
+            const [showRoutineModal, setShowRoutineModal] = useState(false); 
+            const [showLeaveModal, setShowLeaveModal] = useState(false); 
+            
+            const [editingShift, setEditingShift] = useState(null); 
+            const [editingRoutine, setEditingRoutine] = useState(null); 
+            
+            const [newUser, setNewUser] = useState({ name: '', username: '', email: '', password: '', role: 'Personal' });
+            const [newTempShift, setNewTempShift] = useState({ week: 1, day: 1, start: '08:00', end: '17:00', userId: '' });
+            const [newActualShift, setNewActualShift] = useState({ date: '', start: '08:00', end: '17:00', userId: '' });
+            const [routineData, setRoutineData] = useState({ title: '', content: '' });
+            const [leaveData, setLeaveData] = useState({ userId: '', startDate: '', endDate: '', type: 'Semester' });
+            
+            const [passwordData, setPasswordData] = useState({ old: '', new: '', confirm: '' });
+            const [passwordError, setPasswordError] = useState('');
+
+            const [tradeShift1, setTradeShift1] = useState(null); 
+            const [tradeShift2Id, setTradeShift2Id] = useState('');
+            const [newMessageText, setNewMessageText] = useState('');
+
+            const unnotifiedRequests = currentUser ? (tradeRequests || []).filter(r => {
+                if (!r) return false;
+                const isInitiator = r.shift1UserId === currentUser.id;
+                const isTarget = r.shift2UserId === currentUser.id;
+                if (isTarget && r.status === 'pending_peer' && r.targetNotified === false) return true;
+                if (isInitiator && r.status === 'rejected_peer' && r.initiatorNotified === false) return true;
+                if (isInitiator && r.status === 'pending_admin' && r.initiatorNotified === false) return true;
+                if (isAdmin && r.status === 'pending_admin' && r.adminNotified === false) return true;
+                if ((r.status === 'approved' || r.status === 'rejected') && ((isInitiator && r.initiatorNotified === false) || (isTarget && r.targetNotified === false))) return true;
+                return false;
+            }) : [];
+
+            const unnotifiedMessages = currentUser ? (messages || []).filter(m => {
+                if (!m) return false;
+                if (isAdmin) return m.target === 'admin' && !(m.notifiedUsers || []).includes(currentUser.id);
+                else return m.target === 'all' && !(m.notifiedUsers || []).includes(currentUser.id);
+            }) : [];
+
+            const totalUnnotified = unnotifiedRequests.length + unnotifiedMessages.length;
+
+            useEffect(() => {
+                if (totalUnnotified > 0) playNotificationSound();
+            }, [totalUnnotified]);
+
+            const dismissTradeNotification = (reqId, roleType) => {
+                setTradeRequests(prev => (prev || []).map(r => {
+                    if (r && r.id === reqId) {
+                        if (roleType === 'admin') return { ...r, adminNotified: true };
+                        if (roleType === 'initiator') return { ...r, initiatorNotified: true };
+                        if (roleType === 'target') return { ...r, targetNotified: true };
+                    }
+                    return r;
+                }));
+            };
+
+            const dismissMessageNotification = (msgId) => {
+                setMessages(prev => (prev || []).map(m => (m && m.id === msgId) ? { ...m, notifiedUsers: [...(m.notifiedUsers || []), currentUser.id] } : m));
+            };
+
+            const unreadMessagesCount = currentUser ? (messages || []).filter(m => {
+                if (!m) return false;
+                if (isAdmin) return m.target === 'admin' && !(m.readBy || []).includes(currentUser.id);
+                else return m.target === 'all' && !(m.readBy || []).includes(currentUser.id);
+            }).length : 0;
+
+            useEffect(() => {
+                if (activeTab === 'meddelanden' && currentUser) {
+                    let changed = false;
+                    const updated = (messages || []).map(m => {
+                        if (!m) return m;
+                        const isRelevant = isAdmin ? m.target === 'admin' : m.target === 'all';
+                        if (isRelevant && !(m.readBy || []).includes(currentUser.id)) {
+                            changed = true;
+                            return { ...m, readBy: [...(m.readBy || []), currentUser.id] };
+                        }
+                        return m;
+                    });
+                    if (changed) setMessages(updated);
+                }
+            }, [activeTab, currentUser, messages, isAdmin]);
+
+            const handleLogin = (e) => {
+                e.preventDefault();
+                const user = (users || []).find(u => u && u.username && u.username.toLowerCase() === loginData.username.toLowerCase() && u.password === loginData.password);
+                if (user) { setCurrentUser(user); setLoginError(''); setLoginData({ username: '', password: '' }); } 
+                else { setLoginError('Fel användarnamn eller lösenord.'); }
+            };
+
+            const handleLogout = () => { setCurrentUser(null); setActiveTab('veckoschema'); setShowUserMenu(false); };
+
+            const addLog = (action, details) => {
+                const newLog = { id: generateUniqueId('l'), timestamp: new Date().toLocaleString('sv-SE'), userName: currentUser?.name || 'System', action, details };
+                setLogs(prev => [newLog, ...(prev || [])]);
+            };
+
+            const handleChangePassword = (e) => {
+                e.preventDefault();
+                if (passwordData.old !== currentUser.password) {
+                    setPasswordError('Felaktigt nuvarande lösenord.');
+                    return;
+                }
+                if (passwordData.new !== passwordData.confirm) {
+                    setPasswordError('De nya lösenorden matchar inte.');
+                    return;
+                }
+                if (passwordData.new.length < 3) {
+                    setPasswordError('Lösenordet måste vara minst 3 tecken.');
+                    return;
+                }
+                
+                const updatedUsers = users.map(u => 
+                    u.id === currentUser.id ? { ...u, password: passwordData.new } : u
+                );
+                setUsers(updatedUsers);
+                setCurrentUser({ ...currentUser, password: passwordData.new });
+                
+                setShowPasswordModal(false);
+                setPasswordData({ old: '', new: '', confirm: '' });
+                setPasswordError('');
+                addLog("Lösenordsbyte", `${currentUser.name} bytte sitt lösenord.`);
+            };
+
+            const handleAddUser = (e) => {
+                e.preventDefault();
+                if (users.some(u => u.username.toLowerCase() === newUser.username.toLowerCase())) {
+                    alert("Användarnamnet är redan upptaget!");
+                    return;
+                }
+
+                const newUserObj = {
+                    id: generateUniqueId('u'),
+                    name: newUser.name,
+                    username: newUser.username,
+                    email: newUser.email,
+                    password: newUser.password,
+                    role: newUser.role,
+                    color: 'bg-purple-50 text-purple-800 border-purple-200' 
+                };
+
+                setUsers([...users, newUserObj]);
+                setShowUserModal(false);
+                setNewUser({ name: '', username: '', email: '', password: '', role: 'Personal' });
+                addLog("Skapade resurs", `Ny användare: ${newUserObj.name} (${newUserObj.role})`);
+            };
+
+            const handleDeleteShiftInCalendar = (shiftId, dateStr) => {
+                if(!isAdmin) return;
+                
+                if (shiftId.startsWith('t')) {
+                    // Dölj mall-passet temporärt för detta datum
+                    const hideShift = { 
+                        id: generateUniqueId('a'), 
+                        dateStr: dateStr, 
+                        replacesTemplateId: shiftId, 
+                        action: 'delete' 
+                    };
+                    setActualShifts([...(actualShifts || []), hideShift]);
+                    addLog("Tillfällig radering", `Mall-pass borttaget för enbart datum: ${dateStr}`);
+                } else {
+                    deleteActualShift(shiftId);
+                }
+            };
+
+            const handleSaveEditShift = (e) => {
+                e.preventDefault();
+                try {
+                    if(!editingShift || !editingShift.userId) return;
+
+                    // Om vi redigerar ett mall-pass IFRÅN kalendern (targetDateStr finns)
+                    if (editingShift.id.startsWith('t') && editingShift.targetDateStr) {
+                        const overrideShift = {
+                            id: generateUniqueId('a'),
+                            dateStr: editingShift.targetDateStr,
+                            start: editingShift.start,
+                            end: editingShift.end,
+                            userId: editingShift.userId,
+                            replacesTemplateId: editingShift.id,
+                            action: 'override',
+                            isExtra: true
+                        };
+                        setActualShifts([...(actualShifts || []), overrideShift]);
+                        addLog("Tillfällig ändring", `Ny tid/resurs för ${editingShift.targetDateStr}`);
+                    } 
+                    // Vanliga kalenderpass
+                    else if (editingShift.isExtra || editingShift.id.startsWith('a')) { 
+                        setActualShifts((actualShifts || []).map(s => s && s.id === editingShift.id ? editingShift : s)); 
+                        addLog("Redigerade kalenderpass", `Ny tid/resurs sparat.`);
+                    } 
+                    // Permanenta ändringar (via Rullschema)
+                    else { 
+                        const hasConflict = (templateShifts || []).some(s => s && s.id !== editingShift.id && s.userId === editingShift.userId && s.cycleWeek === editingShift.cycleWeek && s.dayOfWeek === editingShift.dayOfWeek);
+                        if (hasConflict) { alert("Krock! Personen har redan ett pass på denna dag i rullschemat."); return; }
+                        
+                        setTemplateShifts((templateShifts || []).map(s => s && s.id === editingShift.id ? editingShift : s)); 
+                        addLog("Redigerade mall-pass", `Permanent ändring genomförd i rullschemat.`);
+                    }
+                    setEditingShift(null);
+                } catch(err) {
+                    alert("Ett fel uppstod när passet skulle sparas. Felkod: " + err.message);
+                    setEditingShift(null);
+                }
+            };
+
+            const handleForgotPasswordSubmit = (e) => {
+                e.preventDefault();
+                setForgotError('');
+                setForgotMessage('');
+                
+                const userIndex = (users || []).findIndex(u => u && u.email && u.email.toLowerCase() === forgotEmail.toLowerCase());
+                if (userIndex !== -1) {
+                    const tempPassword = Math.floor(1000 + Math.random() * 9000).toString();
+                    const updatedUsers = [...users];
+                    updatedUsers[userIndex] = { ...updatedUsers[userIndex], password: tempPassword };
+                    setUsers(updatedUsers);
+                    setForgotMessage(`(System-demo) Ett mail hade skickats. Ditt nya tillfälliga lösenord är: ${tempPassword}`);
+                    setForgotEmail('');
+                    addLog("Lösenordsåterställning", `Begärdes för e-post: ${forgotEmail.toLowerCase()}`);
+                } else {
+                    setForgotError('Ingen resurs hittades med denna e-postadress.');
+                }
+            };
+
+            const formatShiftName = (shiftId) => {
+                const s = [...(templateShifts || []), ...(actualShifts || [])].find(x => x && x.id === shiftId);
+                if(!s) return "Borttaget pass";
+                const u = (users || []).find(user => user && user.id === s.userId)?.name || "Okänd";
+                if(s.isExtra) { return `Extra: ${s.dateStr || ''} kl ${s.start || ''}-${s.end || ''} (${u})`; } 
+                else { return `Mall: V${s.cycleWeek || 1} ${dayNamesFull[(s.dayOfWeek || 1)-1]} kl ${s.start || ''}-${s.end || ''} (${u})`; }
+            };
+
+            const handleAddTemplateShift = (e) => {
+                e.preventDefault();
+                try {
+                    const week = parseInt(newTempShift?.week || 1);
+                    const day = parseInt(newTempShift?.day || 1);
+                    const userId = newTempShift?.userId || '';
+                    if(!userId) { alert("Du måste välja en person!"); return; }
+                    
+                    const hasConflict = (templateShifts || []).some(s => s && s.userId === userId && s.cycleWeek === week && s.dayOfWeek === day);
+                    if (hasConflict) { alert("Krock! Denna person har redan ett pass inlagt på denna dag i rullschemat."); return; }
+                    
+                    const shift = { id: generateUniqueId('t'), cycleWeek: week, dayOfWeek: day, start: newTempShift.start || '08:00', end: newTempShift.end || '17:00', userId: userId };
+                    setTemplateShifts([...(templateShifts || []), shift]);
+                    setShowTemplateModal(false);
+                    addLog("Skapade pass i rullschema", `Resurs: ${(users || []).find(u=>u&&u.id===userId)?.name || 'Okänd'}, V${week} ${dayNamesShort[day-1]}, ${shift.start}-${shift.end}`);
+                } catch(err) {
+                    alert("Kunde inte spara passet: " + err.message);
+                }
+            };
+
+            const handleAddActualShift = (e) => {
+                e.preventDefault();
+                try {
+                    const shift = { id: generateUniqueId('a'), dateStr: newActualShift?.date || '', start: newActualShift?.start || '08:00', end: newActualShift?.end || '17:00', userId: newActualShift?.userId || '', isExtra: true };
+                    setActualShifts([...(actualShifts || []), shift]);
+                    setShowActualShiftModal(false);
+                    addLog("Skapade kalenderpass", `Resurs: ${(users || []).find(u=>u&&u.id===shift.userId)?.name || 'Okänd'}, Datum: ${shift.dateStr}, ${shift.start}-${shift.end}`);
+                } catch(err) {
+                    alert("Kunde inte spara passet: " + err.message);
+                }
+            };
+
+            const handleCreateTrade = (e) => {
+                e.preventDefault();
+                if(!tradeShift2Id || !tradeShift1) return;
+                const shift2 = [...(templateShifts || []), ...(actualShifts || [])].find(s => s && s.id === tradeShift2Id);
+                if(!shift2) return;
+
+                const req = {
+                    id: generateUniqueId('req'),
+                    shift1Id: tradeShift1.id,
+                    shift1UserId: currentUser.id,
+                    shift2Id: shift2.id,
+                    shift2UserId: shift2.userId,
+                    status: 'pending_peer',
+                    timestamp: new Date().toLocaleString('sv-SE'),
+                    adminNotified: false,
+                    initiatorNotified: true, 
+                    targetNotified: false
+                };
+                setTradeRequests([...(tradeRequests || []), req]);
+                setShowTradeModal(false);
+                setTradeShift1(null);
+                setTradeShift2Id('');
+                alert('Din förfrågan har skickats till din kollega!');
+                addLog("Passbyte begärt", `Av ${currentUser?.name || 'Okänd'} mot pass tillhörande ${(users || []).find(u=>u&&u.id===shift2.userId)?.name || 'Okänd'}`);
+            };
+
+            const handlePeerAccept = (reqId) => {
+                setTradeRequests(prev => (prev || []).map(r => r && r.id === reqId ? {
+                    ...r, status: 'pending_admin', adminNotified: false, initiatorNotified: false, targetNotified: true 
+                } : r));
+                addLog("Byte accepterat av kollega", `Ett byte väntar nu på admin-godkännande.`);
+            };
+
+            const handlePeerReject = (reqId) => {
+                setTradeRequests(prev => (prev || []).map(r => r && r.id === reqId ? {
+                    ...r, status: 'rejected_peer', initiatorNotified: false, targetNotified: true
+                } : r));
+            };
+
+            const handleAdminApprove = (reqId) => {
+                const req = (tradeRequests || []).find(r => r && r.id === reqId);
+                if(!req) return;
+
+                const updateShiftUser = (shiftId, newUserId) => {
+                    if((shiftId || '').startsWith('t')) { setTemplateShifts(prev => (prev || []).map(s => s && s.id === shiftId ? {...s, userId: newUserId} : s)); } 
+                    else { setActualShifts(prev => (prev || []).map(s => s && s.id === shiftId ? {...s, userId: newUserId} : s)); }
+                };
+
+                updateShiftUser(req.shift1Id, req.shift2UserId);
+                updateShiftUser(req.shift2Id, req.shift1UserId);
+                setTradeRequests(prev => (prev || []).map(r => r && r.id === reqId ? {...r, status: 'approved', initiatorNotified: false, targetNotified: false} : r));
+                addLog("Passbyte godkänt", `Byte mellan ${(users || []).find(u=>u&&u.id===req.shift1UserId)?.name || 'Okänd'} och ${(users || []).find(u=>u&&u.id===req.shift2UserId)?.name || 'Okänd'} genomfört.`);
+            };
+
+            const handleAdminReject = (reqId) => {
+                setTradeRequests(prev => (prev || []).map(r => r && r.id === reqId ? {...r, status: 'rejected', initiatorNotified: false, targetNotified: false} : r));
+                const req = (tradeRequests || []).find(r => r && r.id === reqId);
+                if(req) addLog("Passbyte nekat av admin", `Förfrågan från ${(users || []).find(u=>u&&u.id===req.shift1UserId)?.name || 'Okänd'} nekades.`);
+            };
+
+            const deleteTemplateShift = (id) => { 
+                if(!isAdmin) return;
+                const s = (templateShifts || []).find(x => x && x.id === id);
+                setTemplateShifts((templateShifts || []).filter(x => x && x.id !== id)); 
+                // Kaskad: Rensa byten kopplade till detta pass
+                setTradeRequests((tradeRequests || []).filter(r => r && r.shift1Id !== id && r.shift2Id !== id));
+                if(s) addLog("Raderade mall-pass", `Resurs: ${(users || []).find(u=>u&&u.id===s.userId)?.name || 'Okänd'}, V${s.cycleWeek} ${dayNamesShort[(s.dayOfWeek||1)-1]}, ${s.start}-${s.end}`);
+            };
+
+            const deleteActualShift = (id) => { 
+                if(!isAdmin) return;
+                const s = (actualShifts || []).find(x => x && x.id === id);
+                setActualShifts((actualShifts || []).filter(x => x && x.id !== id)); 
+                setTradeRequests((tradeRequests || []).filter(r => r && r.shift1Id !== id && r.shift2Id !== id));
+                if(s) addLog("Raderade kalenderpass", `Resurs: ${(users || []).find(u=>u&&u.id===s.userId)?.name || 'Okänd'}, ${s.dateStr} kl ${s.start}-${s.end}`);
+            };
+
+            const handleSendMessage = (e) => {
+                e.preventDefault();
+                if(!newMessageText.trim()) return;
+                const newMsg = {
+                    id: generateUniqueId('m'),
+                    senderId: currentUser.id,
+                    senderName: currentUser.name,
+                    text: newMessageText,
+                    timestamp: new Date().toLocaleString('sv-SE'),
+                    target: isAdmin ? 'all' : 'admin',
+                    readBy: [currentUser.id], 
+                    notifiedUsers: [currentUser.id] 
+                };
+                setMessages([...(messages || []), newMsg]);
+                setNewMessageText('');
+                addLog("Skickade meddelande", `Skickat av ${currentUser.name} till ${isAdmin ? 'alla' : 'admin'}`);
+            };
+
+            const handleSaveRoutine = (e) => {
+                e.preventDefault();
+                if (editingRoutine) {
+                    setRoutines((routines || []).map(r => r && r.id === editingRoutine.id ? { ...r, title: routineData.title, content: routineData.content, timestamp: new Date().toLocaleString('sv-SE') } : r));
+                    addLog("Redigerade rutin", `Uppdaterade rutinen: ${routineData.title}`);
+                } else {
+                    const newR = { id: generateUniqueId('r'), title: routineData.title, content: routineData.content, timestamp: new Date().toLocaleString('sv-SE') };
+                    setRoutines([...(routines || []), newR]);
+                    addLog("Skapade rutin", `Ny lathund tillagd: ${routineData.title}`);
+                }
+                setShowRoutineModal(false);
+                setEditingRoutine(null);
+                setRoutineData({ title: '', content: '' });
+            };
+
+            const handleDeleteRoutine = (id, title) => {
+                if(confirm('Är du säker på att du vill ta bort denna rutin?')) {
+                    setRoutines((routines || []).filter(r => r && r.id !== id));
+                    addLog("Raderade rutin", `Tog bort lathund: ${title}`);
+                }
+            };
+
+            const handleAddLeave = (e) => {
+                e.preventDefault();
+                if(!leaveData.userId || !leaveData.startDate || !leaveData.endDate) return;
+                
+                if (new Date(leaveData.startDate) > new Date(leaveData.endDate)) {
+                    alert("Slutdatum kan inte vara före startdatum.");
+                    return;
+                }
+
+                const newLeave = {
+                    id: generateUniqueId('lv'),
+                    userId: leaveData.userId,
+                    startDate: leaveData.startDate,
+                    endDate: leaveData.endDate,
+                    type: leaveData.type,
+                    timestamp: new Date().toLocaleString('sv-SE')
+                };
+
+                setLeaves([...(leaves || []), newLeave]);
+                setShowLeaveModal(false);
+                addLog("Registrerade frånvaro", `${leaveData.type} för ${(users || []).find(u=>u&&u.id===leaveData.userId)?.name || 'Okänd'} (${leaveData.startDate} till ${leaveData.endDate})`);
+                setLeaveData({ userId: '', startDate: '', endDate: '', type: 'Semester' });
+            };
+
+            const handleDeleteLeave = (id) => {
+                if(confirm('Vill du ta bort denna ledighet?')) {
+                    setLeaves((leaves || []).filter(l => l && l.id !== id));
+                    addLog("Raderade frånvaro", `Ledighetsperiod borttagen.`);
+                }
+            };
+
+            const isUserOnLeave = (userId, dateStr) => {
+                const targetDate = new Date(dateStr);
+                targetDate.setHours(0,0,0,0);
+                
+                return (leaves || []).some(leave => {
+                    if (!leave || leave.userId !== userId) return false;
+                    const start = new Date(leave.startDate);
+                    start.setHours(0,0,0,0);
+                    const end = new Date(leave.endDate);
+                    end.setHours(0,0,0,0);
+                    return targetDate >= start && targetDate <= end;
+                });
+            };
+
+            const exportToICS = () => {
+                const shiftsToExport = [];
+                weekDays.forEach(day => {
+                    if (isUserOnLeave(currentUser.id, day.fullDateStr)) return;
+
+                    const dayActuals = (actualShifts||[]).filter(s => s && s.dateStr === day.fullDateStr);
+                    const aShifts = dayActuals.filter(s => s.action !== 'delete' && s.userId === currentUser.id);
+                    const tShifts = (templateShifts || []).filter(s => {
+                        if (!s || s.userId !== currentUser.id || s.cycleWeek !== activeCycleWeek || s.dayOfWeek !== day.dayNum) return false;
+                        const isOverridden = dayActuals.some(a => a.replacesTemplateId === s.id);
+                        return !isOverridden;
+                    });
+
+                    [...tShifts, ...aShifts].forEach(s => {
+                        shiftsToExport.push({ dateStr: day.fullDateStr, start: s.start || '00:00', end: s.end || '00:00', isExtra: !!s.isExtra });
+                    });
+                });
+                
+                if (shiftsToExport.length === 0) {
+                    alert("Du har inga schemalagda pass denna vecka att exportera.");
+                    return;
+                }
+                
+                let lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//ATLA Schema//SE", "CALSCALE:GREGORIAN", "METHOD:PUBLISH"];
+                shiftsToExport.forEach((s, idx) => {
+                    const dateClean = (s.dateStr || '').replace(/-/g, ''); 
+                    const startClean = (s.start || '').replace(/:/g, '') + "00"; 
+                    let endDateClean = dateClean;
+                    
+                    if (s.end && s.start && s.end.localeCompare(s.start) === -1) {
+                        const nextDay = new Date(s.dateStr);
+                        nextDay.setDate(nextDay.getDate() + 1);
+                        const ny = nextDay.getFullYear();
+                        const nm = String(nextDay.getMonth() + 1).padStart(2, '0');
+                        const nd = String(nextDay.getDate()).padStart(2, '0');
+                        endDateClean = `${ny}${nm}${nd}`;
+                    }
+                    const endClean = (s.end || '').replace(/:/g, '') + "00";
+                    lines.push("BEGIN:VEVENT");
+                    lines.push(`UID:shift-${Date.now()}-${idx}@schema.atla`);
+                    lines.push(`DTSTAMP:${dateClean}T000000Z`);
+                    lines.push(`DTSTART:${dateClean}T${startClean}`);
+                    lines.push(`DTEND:${endDateClean}T${endClean}`);
+                    lines.push(`SUMMARY:Arbetspass: ${s.start}-${s.end}`);
+                    lines.push(`DESCRIPTION:Schemalagt arbetspass via ATLA Schema (${s.isExtra ? 'Extrapass' : 'Ordinarie rullschema'}).`);
+                    lines.push("END:VEVENT");
+                });
+                lines.push("END:VCALENDAR");
+                
+                const blob = new Blob([lines.join("\r\n")], { type: 'text/calendar;charset=utf-8;' });
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(blob);
+                link.setAttribute("download", `schema_vecka_${currentWeekNum}.ics`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+
+            const currentWeekNum = getWeekNumber(currentWeekStart);
+            
+            // --- NY LOGIK FÖR AKTIV RULLVECKA (SÄKRAD MOT ÅRSSKIFTEN) ---
+            const currentMonday = new Date(currentWeekStart);
+            const currentMondayDayNum = currentMonday.getDay() || 7; 
+            currentMonday.setDate(currentMonday.getDate() - currentMondayDayNum + 1);
+            currentMonday.setHours(0, 0, 0, 0);
+
+            // Vi sätter måndagen den 20 maj 2024 som fast ankarpunkt (start på Vecka 1)
+            const anchorMonday = new Date(2024, 4, 20); 
+            anchorMonday.setHours(0, 0, 0, 0);
+
+            const diffMs = currentMonday - anchorMonday;
+            const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+            const diffWeeks = Math.floor(diffDays / 7);
+
+            const activeCycleWeek = ((diffWeeks % cycleWeeks) + cycleWeeks) % cycleWeeks + 1;
+            // --- SLUT PÅ NY LOGIK ---
+
+            const weekDays = Array.from({ length: 7 }).map((_, i) => {
+                const d = new Date(currentWeekStart);
+                const diff = d.getDate() - d.getDay() + (d.getDay() === 0 ? -6 : 1) + i; 
+                d.setDate(diff);
+                return { name: d.toLocaleDateString('sv-SE', { weekday: 'short' }).toUpperCase(), date: d.getDate(), dayNum: i + 1, fullDateStr: formatDateStr(d), dateObj: d };
+            });
+
+            const tradesActionRequiredCount = currentUser ? (tradeRequests || []).filter(r => {
+                if (!r) return false;
+                if (isAdmin && r.status === 'pending_admin') return true;
+                if (!isAdmin && r.status === 'pending_peer' && r.shift2UserId === currentUser.id) return true;
+                return false;
+            }).length : 0;
+
+            if (!currentUser) {
+                return (
+                    <div className="min-h-screen bg-gray-100 flex items-center justify-center font-sans p-4">
+                        <div className="bg-white p-8 md:p-10 rounded-lg shadow-xl w-full max-w-[400px]">
+                            <div className="text-center mb-8">
+                                <h1 className="text-4xl font-bold tracking-tighter text-slate-800">SCHEMA<span className="text-indigo-600">.</span></h1>
+                                <p className="text-sm text-gray-400 mt-2">Logga in för att se ditt schema</p>
+                            </div>
+                            
+                            {!showForgotForm ? (
+                                <>
+                                    {loginError && <div className="bg-red-50 text-red-600 p-3 rounded mb-4 text-sm border border-red-200">{loginError}</div>}
+                                    <form onSubmit={handleLogin} className="space-y-4">
+                                        <div><label className="block text-xs font-bold text-gray-500 mb-1">Användarnamn</label><input type="text" className="w-full text-base border border-gray-300 p-2 rounded focus:outline-none focus:border-indigo-500" value={loginData.username} onChange={e => setLoginData({...loginData, username: e.target.value})} required /></div>
+                                        <div>
+                                            <div className="flex justify-between items-end mb-1">
+                                                <label className="block text-xs font-bold text-gray-500">Lösenord</label>
+                                                <button type="button" onClick={() => {setShowForgotForm(true); setForgotMessage(''); setForgotError('');}} className="text-xs text-indigo-600 hover:underline">Glömt lösenord?</button>
+                                            </div>
+                                            <input type="password" className="w-full text-base border border-gray-300 p-2 rounded focus:outline-none focus:border-indigo-500" value={loginData.password} onChange={e => setLoginData({...loginData, password: e.target.value})} required />
+                                        </div>
+                                        <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-3 rounded shadow hover:bg-indigo-700 transition mt-4">Logga in</button>
+                                    </form>
+                                </>
+                            ) : (
+                                <div className="animate-slide-in">
+                                    <h3 className="text-lg font-bold mb-2">Återställ lösenord</h3>
+                                    <p className="text-xs text-gray-500 mb-4">Skriv in din e-postadress så får du ett nytt tillfälligt lösenord.</p>
+                                    {forgotError && <div className="bg-red-50 text-red-600 p-3 rounded mb-4 text-xs border border-red-200">{forgotError}</div>}
+                                    {forgotMessage && <div className="bg-green-50 text-green-700 p-3 rounded mb-4 text-xs border border-green-200 font-medium leading-relaxed">{forgotMessage}</div>}
+                                    <form onSubmit={handleForgotPasswordSubmit} className="space-y-4">
+                                        <div><label className="block text-xs font-bold text-gray-500 mb-1">E-postadress</label><input type="email" className="w-full text-base border border-gray-300 p-2 rounded focus:outline-none focus:border-indigo-500" value={forgotEmail} onChange={e => setForgotEmail(e.target.value)} required /></div>
+                                        <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-3 rounded shadow hover:bg-indigo-700 transition">Skicka nytt lösenord</button>
+                                    </form>
+                                    <div className="mt-4 text-center"><button type="button" onClick={() => setShowForgotForm(false)} className="text-xs text-gray-500 hover:text-indigo-600 font-bold hover:underline">← Tillbaka till inloggning</button></div>
+                                </div>
+                            )}
+
+                            <div className="mt-6 text-xs text-gray-400 text-center border-t pt-4"><p>Testkonton (Lösenord: 123):</p><p>Admin: tommyl | Personal: david, justina</p></div>
+                            <div className="mt-8 text-center"><button onClick={() => {if(confirm("Är du helt säker? All data i webbläsaren kommer att raderas och återställas till fabriksinställning.")){localStorage.clear(); window.location.reload();}}} className="text-[10px] text-red-300 hover:text-red-500 underline">Nödknapp: Nollställ all data (vid tekniskt fel)</button></div>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen relative bg-gray-50 text-gray-800">
+                    
+                    {/* NOTIFIKATIONER SLIDE-IN */}
+                    <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-6 md:bottom-6 z-[200] space-y-3 pointer-events-none">
+                        {unnotifiedRequests.map(req => {
+                            if(!req) return null;
+                            const isInitiator = req.shift1UserId === currentUser.id;
+                            const isTarget = req.shift2UserId === currentUser.id;
+                            
+                            let bgColor, titleText, descText, roleType;
+                            
+                            if (req.status === 'pending_peer' && isTarget) {
+                                bgColor = 'bg-blue-600'; titleText = 'Ny bytesförfrågan!'; descText = `${(users||[]).find(u=>u&&u.id===req.shift1UserId)?.name || 'Okänd'} vill byta pass med dig.`; roleType = 'target';
+                            } else if (req.status === 'pending_admin' && isInitiator && !req.initiatorNotified) {
+                                bgColor = 'bg-blue-500'; titleText = 'Kollega accepterade!'; descText = `Bytet inväntar nu admin.`; roleType = 'initiator';
+                            } else if (req.status === 'pending_admin' && isAdmin && !req.adminNotified) {
+                                bgColor = 'bg-indigo-600'; titleText = 'Nytt byte att godkänna!'; descText = `${(users||[]).find(u=>u&&u.id===req.shift1UserId)?.name || 'Okänd'} och ${(users||[]).find(u=>u&&u.id===req.shift2UserId)?.name || 'Okänd'} vill byta.`; roleType = 'admin';
+                            } else if (req.status === 'rejected_peer' && isInitiator && !req.initiatorNotified) {
+                                bgColor = 'bg-red-500'; titleText = 'Byte avböjt av kollega'; descText = `${(users||[]).find(u=>u&&u.id===req.shift2UserId)?.name || 'Okänd'} tackade nej.`; roleType = 'initiator';
+                            } else if (req.status === 'approved' || req.status === 'rejected') {
+                                bgColor = req.status === 'approved' ? 'bg-green-600' : 'bg-red-600'; 
+                                titleText = req.status === 'approved' ? 'Passbyte godkänt!' : 'Passbyte nekat av admin'; 
+                                descText = `Ditt bytesförslag (${(req.timestamp||'').split(' ')[0]}) har ${req.status === 'approved' ? 'godkänts' : 'nekats'}.`; 
+                                roleType = isInitiator ? 'initiator' : 'target';
+                            }
+                            
+                            return (
+                                <div key={req.id + roleType} className={`${bgColor} pointer-events-auto text-white p-4 rounded-lg shadow-2xl flex items-center justify-between space-x-4 animate-slide-in w-full md:min-w-[300px]`}>
+                                    <div><strong className="block text-sm mb-1">{titleText}</strong><span className="text-xs opacity-90">{descText}</span></div>
+                                    <button onClick={() => dismissTradeNotification(req.id, roleType)} className="bg-white/20 hover:bg-white/30 text-white font-bold py-2 px-4 rounded text-xs transition">OK</button>
+                                </div>
+                            );
+                        })}
+
+                        {unnotifiedMessages.map(m => {
+                            if(!m) return null;
+                            return (
+                                <div key={m.id} className="bg-indigo-600 pointer-events-auto text-white p-4 rounded-lg shadow-2xl flex items-center justify-between space-x-4 animate-slide-in w-full md:min-w-[300px]">
+                                    <div>
+                                        <strong className="block text-sm mb-1">{m.target === 'all' ? 'Nyhet från Admin' : `Nytt meddelande från ${m.senderName}`}</strong>
+                                        <span className="text-xs opacity-90">{(m.text||'').substring(0, 30)}{(m.text||'').length > 30 ? '...' : ''}</span>
+                                    </div>
+                                    <button onClick={() => dismissMessageNotification(m.id)} className="bg-white/20 hover:bg-white/30 text-white font-bold py-2 px-4 rounded text-xs transition">
+                                        OK
+                                    </button>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {/* HEADER */}
+                    <header className="bg-white border-b sticky top-0 z-40 shadow-sm flex flex-col md:flex-col">
+                        <div className="flex justify-between items-center px-4 py-3 md:px-6 md:py-4">
+                            <div className="flex items-center space-x-2">
+                                <h1 className="text-2xl md:text-3xl font-black tracking-tighter text-slate-800">SCHEMA<span className="text-indigo-600">.</span></h1>
+                            </div>
+                            
+                            <div className="flex items-center space-x-3">
+                                <div className="text-right flex flex-col items-end relative">
+                                    <div className="text-sm font-bold text-slate-800 cursor-pointer" onClick={() => setShowUserMenu(!showUserMenu)}>{currentUser.name}</div>
+                                    <div className="text-[10px] text-gray-500 hidden sm:block">{currentUser.role}</div>
+                                    
+                                    {showUserMenu && (
+                                        <div className="absolute top-full right-0 mt-2 w-48 bg-white border rounded shadow-xl z-50 overflow-hidden">
+                                            <button onClick={() => {setShowPasswordModal(true); setShowUserMenu(false);}} className="w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 border-b">Byt lösenord</button>
+                                            <button onClick={() => {handleLogout(); setShowUserMenu(false);}} className="w-full text-left px-4 py-3 text-sm text-red-600 hover:bg-red-50 font-semibold">Logga ut</button>
+                                        </div>
+                                    )}
+                                </div>
+                                <div onClick={() => setShowUserMenu(!showUserMenu)} className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center font-bold text-indigo-700 cursor-pointer">{(currentUser.name||'A').charAt(0)}</div>
+                            </div>
+                        </div>
+                        
+                        <nav className="flex overflow-x-auto no-scrollbar space-x-2 px-4 py-2 bg-gray-50 border-t md:px-6">
+                            {['veckoschema', 'rutiner', 'meddelanden', 'byten', 'rullschema', 'ledighet', 'timmar', 'personal', 'loggbok']
+                                .filter(t => isAdmin || ['veckoschema', 'rutiner', 'meddelanden', 'byten'].includes(t)) 
+                                .map(t => {
+                                return (
+                                    <button key={t} onClick={() => setActiveTab(t)} className={`whitespace-nowrap px-4 py-2 rounded-full text-sm font-medium capitalize relative transition-colors ${activeTab === t ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-200'}`}>
+                                        {t}
+                                        {t === 'byten' && tradesActionRequiredCount > 0 && <span className="absolute top-0 right-0 -mt-1 -mr-1 bg-red-500 text-white text-[10px] font-bold h-4 w-4 flex items-center justify-center rounded-full">{tradesActionRequiredCount}</span>}
+                                        {t === 'meddelanden' && unreadMessagesCount > 0 && <span className="absolute top-0 right-0 -mt-1 -mr-1 bg-red-500 text-white text-[10px] font-bold h-4 w-4 flex items-center justify-center rounded-full">{unreadMessagesCount}</span>}
+                                    </button>
+                                );
+                            })}
+                        </nav>
+                    </header>
+
+                    <main className="p-4 md:p-8 max-w-[1600px] mx-auto">
+                        
+                        {/* VECKOSCHEMA */}
+                        {activeTab === 'veckoschema' && (
+                            <div className="animate-in fade-in duration-300">
+                                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 space-y-4 md:space-y-0">
+                                    <div className="flex flex-col">
+                                        <h1 className="text-2xl md:text-3xl font-bold text-slate-800">{getMonthName(weekDays[0].dateObj)} {weekDays[0].dateObj.getFullYear()}</h1>
+                                        <span className="text-sm text-gray-400 mt-1">Rullvecka {activeCycleWeek} i cykeln</span>
+                                    </div>
+                                    <div className="flex w-full md:w-auto items-center justify-between md:justify-end space-x-3">
+                                        <button onClick={exportToICS} className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs md:text-sm px-3 py-2.5 rounded shadow flex items-center space-x-1 transition">
+                                            <span>📥</span>
+                                            <span className="hidden sm:inline">Exportera mina pass (.ics)</span>
+                                            <span className="sm:hidden">Exportera</span>
+                                        </button>
+
+                                        <div className="flex items-center space-x-2 bg-white border rounded p-1 shadow-sm">
+                                            <button onClick={() => setCurrentWeekStart(new Date(currentWeekStart.setDate(currentWeekStart.getDate() - 7)))} className="p-2 hover:bg-gray-100 rounded text-gray-600 font-bold">&larr;</button>
+                                            <span className="px-2 md:px-4 font-semibold text-sm text-slate-700 whitespace-nowrap">V. {currentWeekNum}</span>
+                                            <button onClick={() => setCurrentWeekStart(new Date(currentWeekStart.setDate(currentWeekStart.getDate() + 7)))} className="p-2 hover:bg-gray-100 rounded text-gray-600 font-bold">&rarr;</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-4">
+                                    {weekDays.map(day => {
+                                        const dayActuals = (actualShifts||[]).filter(s => s && s.dateStr === day.fullDateStr);
+                                        const aShifts = dayActuals.filter(s => s.action !== 'delete');
+                                        
+                                        const tShifts = (templateShifts||[]).filter(s => {
+                                            if (!s || s.cycleWeek !== activeCycleWeek || s.dayOfWeek !== day.dayNum) return false;
+                                            const isOverridden = dayActuals.some(a => a.replacesTemplateId === s.id);
+                                            return !isOverridden;
+                                        });
+                                        
+                                        let finalShifts = [];
+                                        let peopleOnLeaveToday = new Set();
+
+                                        [...tShifts, ...aShifts].forEach(shift => {
+                                            if (isUserOnLeave(shift.userId, day.fullDateStr)) {
+                                                peopleOnLeaveToday.add(shift.userId);
+                                            } else {
+                                                finalShifts.push(shift);
+                                            }
+                                        });
+
+                                        finalShifts.sort((a, b) => (a.start||'').localeCompare(b.start||''));
+                                        const isToday = new Date().toDateString() === day.dateObj.toDateString();
+
+                                        return (
+                                            <div key={day.dayNum} className={`flex flex-col space-y-3 bg-white p-3 rounded-lg border ${isToday ? 'border-indigo-300 shadow-md ring-1 ring-indigo-100' : 'border-gray-200 shadow-sm'}`}>
+                                                <div className="flex items-center justify-between lg:justify-center lg:flex-col border-b pb-2">
+                                                    <div className={`text-[11px] font-bold uppercase ${isToday ? 'text-indigo-600' : 'text-gray-400'}`}>{day.name}</div>
+                                                    <div className={`text-xl font-black ${isToday ? 'text-indigo-600' : ''}`}>{day.date}</div>
+                                                </div>
+                                                
+                                                <div className="space-y-2 flex-grow">
+                                                    {finalShifts.length === 0 && peopleOnLeaveToday.size === 0 && <div className="text-xs text-gray-300 italic text-center py-4">Inga pass</div>}
+                                                    
+                                                    {finalShifts.map(shift => {
+                                                        const user = (users||[]).find(u => u && u.id === shift.userId);
+                                                        const isMyShift = currentUser.id === shift.userId;
+                                                        return (
+                                                            <div key={shift.id} className={`p-3 rounded border-l-4 relative group ${user?.color || 'bg-gray-50 border-gray-300'}`}>
+                                                                <div className="font-bold text-sm md:text-xs whitespace-nowrap">{shift.start} - {shift.end}</div>
+                                                                <div className="text-sm md:text-xs mt-0.5">{user?.name || 'Okänd resurs'}</div>
+                                                                
+                                                                <div className="flex space-x-2 mt-2 pt-2 border-t border-opacity-20 border-black lg:opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                    {isAdmin && (
+                                                                        <>
+                                                                            <button onClick={() => setEditingShift({...shift, targetDateStr: day.fullDateStr})} className="text-[10px] font-semibold hover:underline">Ändra</button>
+                                                                            <button onClick={() => handleDeleteShiftInCalendar(shift.id, day.fullDateStr)} className="text-[10px] text-red-500 font-semibold hover:underline">Radera</button>
+                                                                        </>
+                                                                    )}
+                                                                    {isMyShift && (
+                                                                        <button onClick={() => { setTradeShift1(shift); setShowTradeModal(true); }} className="text-[10px] text-blue-600 font-bold hover:underline bg-blue-50 px-2 py-1 rounded ml-auto">
+                                                                            Byt pass ⇄
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                                {!shift.isExtra && !shift.replacesTemplateId && <div className="text-[9px] text-gray-400 mt-1 uppercase">Rullschema</div>}
+                                                                {shift.replacesTemplateId && <div className="text-[9px] text-orange-400 mt-1 uppercase">Ändrat pass</div>}
+                                                            </div>
+                                                        );
+                                                    })}
+
+                                                    {Array.from(peopleOnLeaveToday).map(userId => {
+                                                        const user = (users||[]).find(u => u && u.id === userId);
+                                                        return (
+                                                            <div key={`leave-${userId}`} className="p-3 rounded border-l-4 border-red-500 bg-red-50 text-red-800 shadow-sm">
+                                                                <div className="font-bold text-xs uppercase tracking-wide">Ledig / Frånvaro</div>
+                                                                <div className="text-sm md:text-xs mt-0.5 font-medium">{user?.name || 'Okänd'}</div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+
+                                                {isAdmin && ( 
+                                                    <button onClick={() => { setNewActualShift({...newActualShift, date: day.fullDateStr, userId: ''}); setShowActualShiftModal(true); }} className="border-2 border-dashed border-gray-300 rounded py-2 text-gray-400 font-bold hover:text-indigo-600 hover:border-indigo-300 text-xs hover:bg-indigo-50 transition w-full mt-2">
+                                                        + Nytt pass
+                                                    </button> 
+                                                )}
+                                            </div>
+                                        )
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* RUTINER */}
+                        {activeTab === 'rutiner' && (
+                            <div className="max-w-4xl mx-auto space-y-6">
+                                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 pb-6 border-b space-y-4 md:space-y-0">
+                                    <div>
+                                        <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-800">Lathund & Rutiner</h2>
+                                        <p className="text-sm text-gray-500 mt-1">Här finns checklistor och viktiga rutiner för driften.</p>
+                                    </div>
+                                    {isAdmin && (
+                                        <button onClick={() => { setRoutineData({title:'', content:''}); setEditingRoutine(null); setShowRoutineModal(true); }} className="bg-indigo-600 text-white px-4 py-2.5 rounded-md hover:bg-indigo-700 shadow-md font-bold text-sm w-full md:w-auto">
+                                            + Ny lathund
+                                        </button>
+                                    )}
+                                </div>
+                                
+                                {!(routines||[]).length && <div className="text-gray-400 italic text-center py-4 bg-white rounded-lg border border-dashed">Inga rutiner inlagda ännu.</div>}
+                                
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+                                    {(routines||[]).map(r => {
+                                        if(!r) return null;
+                                        return (
+                                        <div key={r.id} className="bg-white p-5 md:p-6 rounded-lg shadow-sm border border-gray-200 relative group">
+                                            <h3 className="text-lg font-bold text-slate-800 mb-4 pr-8">{r.title}</h3>
+                                            <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{r.content}</p>
+                                            <div className="mt-6 pt-4 border-t border-gray-100 text-[10px] text-gray-400">Uppdaterad: {r.timestamp}</div>
+                                            
+                                            {isAdmin && (
+                                                <div className="absolute top-4 right-4 md:opacity-0 group-hover:opacity-100 transition-opacity flex space-x-3 bg-white pl-2">
+                                                    <button onClick={() => { setEditingRoutine(r); setRoutineData({title: r.title, content: r.content}); setShowRoutineModal(true); }} className="text-lg md:text-sm text-indigo-600 hover:text-indigo-800 px-2">✎</button>
+                                                    <button onClick={() => handleDeleteRoutine(r.id, r.title)} className="text-lg md:text-sm text-red-500 hover:text-red-700 px-2">🗑️</button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )})}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* MEDDELANDEN */}
+                        {activeTab === 'meddelanden' && (
+                            <div className="max-w-4xl mx-auto bg-white p-4 md:p-6 rounded-lg shadow-sm">
+                                <div className="mb-6 pb-6 border-b">
+                                    <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-800">Meddelanden & Nyheter</h2>
+                                    <p className="text-sm text-gray-500 mt-1">
+                                        {isAdmin ? "Kommunicera med hela personalen eller läs inkomna meddelanden." : "Läs nyheter från ledningen eller skicka ett privat meddelande till Admin."}
+                                    </p>
+                                </div>
+
+                                <form onSubmit={handleSendMessage} className="mb-8">
+                                    <textarea
+                                        className="w-full text-base border border-gray-300 p-4 rounded-lg focus:outline-none focus:border-indigo-500 bg-gray-50 md:text-sm"
+                                        rows="3"
+                                        placeholder={isAdmin ? "Skriv en nyhet till all personal..." : "Skriv ett meddelande till Admin (syns ej för kollegor)..."}
+                                        value={newMessageText}
+                                        onChange={e => setNewMessageText(e.target.value)}
+                                        required
+                                    ></textarea>
+                                    <div className="flex justify-end mt-3">
+                                        <button type="submit" className="bg-indigo-600 text-white px-6 py-2.5 rounded shadow hover:bg-indigo-700 font-bold text-sm w-full md:w-auto">
+                                            Skicka meddelande
+                                        </button>
+                                    </div>
+                                </form>
+
+                                <div className="space-y-4">
+                                    {!(messages||[]).length && <div className="text-gray-400 italic text-center py-8 border border-dashed rounded-lg">Inga meddelanden ännu.</div>}
+                                    
+                                    {([...(messages||[])].reverse()).filter(m => {
+                                        if(!m) return false;
+                                        if (isAdmin) return true;
+                                        return m.target === 'all' || m.senderId === currentUser.id;
+                                    }).map(m => {
+                                        if(!m) return null;
+                                        const fromAdminToAll = m.target === 'all';
+                                        return (
+                                            <div key={m.id} className={`p-4 md:p-5 rounded-lg border ${fromAdminToAll ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-gray-200'} shadow-sm relative`}>
+                                                <div className="flex justify-between items-center mb-3">
+                                                    <div className="flex items-center">
+                                                        <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs mr-3 ${fromAdminToAll ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-600'}`}>
+                                                            {(m.senderName||'').charAt(0)}
+                                                        </div>
+                                                        <div className="flex flex-col md:flex-row md:items-center">
+                                                            <span className="font-bold text-sm text-slate-800">{m.senderName}</span>
+                                                            <div className="mt-1 md:mt-0">
+                                                                {fromAdminToAll ? <span className="text-[10px] bg-indigo-600 text-white px-2 py-0.5 rounded-full md:ml-2">NYHET</span> : null}
+                                                                {!fromAdminToAll && <span className="text-[10px] bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full md:ml-2">TILL ADMIN</span>}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <span className="text-xs text-gray-400">{(m.timestamp||'').split(' ')[0]}</span>
+                                                </div>
+                                                <p className="text-sm md:text-base text-gray-700 whitespace-pre-wrap leading-relaxed">{m.text}</p>
+                                                
+                                                {isAdmin && (
+                                                    <button onClick={() => { if(confirm("Ta bort meddelande?")) setMessages((messages||[]).filter(msg => msg && msg.id !== m.id)); }} className="absolute top-4 right-4 text-gray-300 hover:text-red-500">
+                                                        🗑️
+                                                    </button>
+                                                )}
+                                            </div>
+                                        )
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* RULLSCHEMA */}
+                        {activeTab === 'rullschema' && isAdmin && (
+                            <div className="bg-white p-4 md:p-6 rounded-lg shadow-sm">
+                                <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 pb-6 border-b space-y-4 lg:space-y-0">
+                                    <div>
+                                        <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-800">Översikt Rullschema</h2>
+                                        <p className="text-sm text-gray-500 mt-1">Här ser du hur alla återkommande pass rullar över tiden per resurs.</p>
+                                    </div>
+                                    <div className="flex flex-col sm:flex-row items-center w-full lg:w-auto space-y-3 sm:space-y-0 sm:space-x-4">
+                                        <div className="flex items-center w-full sm:w-auto bg-gray-50 p-2 rounded border">
+                                            <label className="text-sm font-semibold text-gray-700 mr-2">Cykel:</label>
+                                            <select className="border rounded p-1 text-base md:text-sm bg-white flex-1" value={cycleWeeks} onChange={(e) => setCycleWeeks(parseInt(e.target.value))}>
+                                                {[1,2,3,4,5,6,7,8].map(w => <option key={w} value={w}>{w} veckor</option>)}
+                                            </select>
+                                        </div>
+                                        <button onClick={() => { setNewTempShift({ week: 1, day: 1, start: '08:00', end: '17:00', userId: '' }); setShowTemplateModal(true); }} className="bg-indigo-600 text-white px-4 py-2.5 rounded-md hover:bg-indigo-700 shadow-md font-bold w-full sm:w-auto">
+                                            + Nytt pass
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="overflow-x-auto table-container border rounded bg-white">
+                                    <table className="divide-y table-fixed" style={{ minWidth: `calc(120px + ${cycleWeeks * 7 * 100}px)` }}>
+                                        <thead>
+                                            <tr className="bg-white z-20">
+                                                <th className="sticky-col sticky-row text-xs font-bold uppercase text-slate-500 border-b w-[150px] !bg-white">Resurs</th>
+                                                {Array.from({ length: cycleWeeks }).map((_, wIndex) => {
+                                                    const weekNum = wIndex + 1;
+                                                    const isCurrentCycleWeek = weekNum === activeCycleWeek;
+                                                    return (
+                                                        <th key={`week-${weekNum}`} colSpan="7" className="text-xs font-semibold py-3 border-r-4 border-gray-300">
+                                                            Vecka {weekNum} {isCurrentCycleWeek && <span className="ml-2 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-bold">Aktiv nu</span>}
+                                                        </th>
+                                                    )
+                                                })}
+                                            </tr>
+                                            <tr className="z-10 bg-white">
+                                                <th className="sticky-col border-b border-r !bg-white"></th>
+                                                {Array.from({ length: cycleWeeks }).map((_, wIndex) => (
+                                                    dayNamesShort.map((day, dIndex) => {
+                                                        const isSunday = dIndex === 6;
+                                                        return <th key={`w${wIndex}d${dIndex}`} className={`text-[11px] font-bold py-2 ${day === 'S' ? 'text-red-500' : 'text-gray-500'} ${isSunday ? 'border-r-4 border-gray-300' : 'border-r'}`}>{day}</th>
+                                                    })
+                                                ))}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {(users||[]).map(u => {
+                                                if(!u) return null;
+                                                const userShifts = (templateShifts||[]).filter(s => s && s.userId === u.id);
+                                                if(userShifts.length === 0) return null; 
+                                                return (
+                                                    <tr key={u.id} className="hover:bg-gray-50 group border-b">
+                                                        <td className="sticky-col text-sm border-r text-slate-800 py-4 !bg-white group-hover:!bg-gray-50"><div className="font-medium truncate">{u.name}</div></td>
+                                                        {Array.from({ length: cycleWeeks * 7 }).map((_, i) => {
+                                                            const colIndex = i + 1;
+                                                            const weekNum = Math.ceil(colIndex / 7);
+                                                            const dayNum = (colIndex - 1) % 7 + 1;
+                                                            const isSunday = dayNum === 7;
+                                                            const shifts = (templateShifts||[]).filter(s => s && s.userId === u.id && s.cycleWeek === weekNum && s.dayOfWeek === dayNum);
+                                                            
+                                                            const hasShift = shifts.length > 0;
+
+                                                            return (
+                                                                <td key={`cell-${u.id}-${colIndex}`} className={`p-1.5 text-center align-top hover:bg-gray-50 transition relative min-h-[50px] group/cell ${isSunday ? 'border-r-4 border-gray-300' : 'border-r'}`}>
+                                                                    {shifts.map(shift => (
+                                                                        <div key={shift.id} className="mb-1 text-[11px] bg-white border rounded p-1 shadow-sm font-medium group/shift transition-all">
+                                                                            <div className="whitespace-nowrap">{shift.start}-{shift.end}</div>
+                                                                            <div className="hidden group-hover/shift:flex flex-col mt-1 space-y-1">
+                                                                                <button onClick={() => setEditingShift({...shift})} className="text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 py-1 rounded w-full transition">Ändra</button>
+                                                                                <button onClick={() => deleteTemplateShift(shift.id)} className="text-[10px] font-bold text-red-700 bg-red-50 hover:bg-red-100 py-1 rounded w-full transition">Radera</button>
+                                                                            </div>
+                                                                        </div>
+                                                                    ))}
+                                                                    
+                                                                    {!hasShift && (
+                                                                        <div 
+                                                                            onClick={() => { setNewTempShift({ week: weekNum, day: dayNum, start: '08:00', end: '17:00', userId: u.id }); setShowTemplateModal(true); }}
+                                                                            className="opacity-0 group-hover/cell:opacity-100 absolute inset-0 cursor-pointer flex items-center justify-center bg-indigo-50/50 text-indigo-600 font-bold text-xl transition-opacity"
+                                                                            title="Lägg till pass"
+                                                                        >
+                                                                            +
+                                                                        </div>
+                                                                    )}
+                                                                </td>
+                                                            );
+                                                        })}
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* LEDIGHET */}
+                        {activeTab === 'ledighet' && isAdmin && (
+                            <div className="max-w-4xl mx-auto space-y-6">
+                                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 pb-6 border-b space-y-4 md:space-y-0">
+                                    <div>
+                                        <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-800">Ledighet & Frånvaro</h2>
+                                        <p className="text-sm text-gray-500 mt-1">Här markerar du resurser som är frånvarande. Pass under denna period döljs i schemat.</p>
+                                    </div>
+                                    <button onClick={() => setShowLeaveModal(true)} className="bg-indigo-600 text-white px-4 py-2.5 rounded-md hover:bg-indigo-700 shadow-md font-bold text-sm w-full md:w-auto">
+                                        + Ny frånvaro
+                                    </button>
+                                </div>
+                                
+                                {!(leaves||[]).length && <div className="text-gray-400 italic text-center py-8 border border-dashed rounded-lg bg-white">Ingen frånvaro registrerad.</div>}
+                                
+                                <div className="space-y-4">
+                                    {(leaves||[]).map(leave => {
+                                        if(!leave) return null;
+                                        const u = (users||[]).find(user => user && user.id === leave.userId);
+                                        return (
+                                            <div key={leave.id} className="bg-white p-5 rounded-lg shadow-sm border border-red-200 flex flex-col md:flex-row justify-between md:items-center relative">
+                                                <div className="flex items-center space-x-4">
+                                                    <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center font-bold text-red-600">{(u?.name || 'A').charAt(0)}</div>
+                                                    <div>
+                                                        <div className="font-bold text-slate-800">{u?.name || 'Okänd resurs'}</div>
+                                                        <div className="text-xs font-semibold text-red-600 uppercase tracking-wider">{leave.type}</div>
+                                                    </div>
+                                                </div>
+                                                <div className="mt-4 md:mt-0 flex items-center justify-between md:space-x-6">
+                                                    <div className="text-sm font-medium bg-gray-50 px-3 py-1.5 rounded border">
+                                                        {leave.startDate} &nbsp; ➔ &nbsp; {leave.endDate}
+                                                    </div>
+                                                    <button onClick={() => handleDeleteLeave(leave.id)} className="text-xl md:text-base text-gray-300 hover:text-red-500 ml-4">🗑️</button>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TIMMAR */}
+                        {activeTab === 'timmar' && isAdmin && (
+                            <div className="bg-white p-4 md:p-6 rounded-lg shadow-sm">
+                                <div className="mb-6 pb-6 border-b">
+                                    <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-800">Timmar (Rullschema)</h2>
+                                    <p className="text-sm text-gray-500 mt-1">Genomsnittlig arbetstid per person i rullschemat.</p>
+                                </div>
+                                <div className="overflow-x-auto border rounded bg-white max-w-4xl">
+                                    <table className="divide-y w-full">
+                                        <thead className="bg-gray-50">
+                                            <tr>
+                                                <th className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider sticky left-0 bg-gray-50 border-r">Resurs</th>
+                                                {Array.from({ length: cycleWeeks }).map((_, i) => (
+                                                    <th key={i} className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">V. {i + 1}</th>
+                                                ))}
+                                                <th className="px-4 py-3 text-center text-xs font-bold text-indigo-600 uppercase tracking-wider">Snitt / Vecka</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="bg-white divide-y divide-gray-200">
+                                            {(users||[]).map(u => {
+                                                if(!u) return null;
+                                                const userHasAnyShift = (templateShifts||[]).some(s => s && s.userId === u.id);
+                                                if (!userHasAnyShift) return null;
+                                                let totalCycleHours = 0;
+                                                return (
+                                                    <tr key={u.id} className="hover:bg-gray-50">
+                                                        <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900 sticky left-0 bg-white border-r">{u.name}</td>
+                                                        {Array.from({ length: cycleWeeks }).map((_, i) => {
+                                                            const weekNum = i + 1;
+                                                            const weekShifts = (templateShifts||[]).filter(s => s && s.userId === u.id && s.cycleWeek === weekNum);
+                                                            const weekHours = weekShifts.reduce((acc, shift) => acc + calculateHours(shift.start, shift.end), 0);
+                                                            totalCycleHours += weekHours;
+                                                            return <td key={i} className="px-4 py-4 whitespace-nowrap text-sm text-center text-gray-500 border-r">{weekHours > 0 ? `${weekHours.toFixed(2)} h` : '-'}</td>;
+                                                        })}
+                                                        <td className="px-4 py-4 whitespace-nowrap text-sm text-center font-black text-indigo-600 bg-indigo-50/30">
+                                                            {(totalCycleHours / cycleWeeks).toFixed(2)} h
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* BYTEN */}
+                        {activeTab === 'byten' && (
+                            <div className="bg-white p-4 md:p-6 rounded-lg shadow-sm">
+                                <div className="mb-6 pb-6 border-b">
+                                    <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-800">Bytesförfrågningar</h2>
+                                    <p className="text-sm text-gray-500 mt-1">Ansökningar om att byta pass mellan kollegor.</p>
+                                </div>
+
+                                <div className="space-y-4 max-w-4xl">
+                                    {!(tradeRequests||[]).length && <div className="text-gray-400 italic bg-gray-50 p-4 rounded text-center border border-dashed">Inga bytesförfrågningar har gjorts ännu.</div>}
+                                    
+                                    {(tradeRequests||[]).map(req => {
+                                        if (!req) return null;
+                                        if (!isAdmin && currentUser.id !== req.shift1UserId && currentUser.id !== req.shift2UserId) {
+                                            return null;
+                                        }
+
+                                        const isPendingPeer = req.status === 'pending_peer';
+                                        const isPendingAdmin = req.status === 'pending_admin';
+                                        const isApproved = req.status === 'approved';
+                                        const isRejected = req.status === 'rejected' || req.status === 'rejected_peer';
+                                        
+                                        const reqUser = (users||[]).find(u => u && u.id === req.shift1UserId);
+                                        const targetUser = (users||[]).find(u => u && u.id === req.shift2UserId);
+                                        
+                                        let statusText, statusColor;
+                                        if (isPendingPeer) { statusText = `Väntar på ${targetUser?.name || 'Kollega'}`; statusColor = 'bg-yellow-200 text-yellow-800'; }
+                                        else if (isPendingAdmin) { statusText = 'Väntar på Admin'; statusColor = 'bg-orange-200 text-orange-800'; }
+                                        else if (isApproved) { statusText = 'Godkänd'; statusColor = 'bg-green-200 text-green-800'; }
+                                        else { statusText = 'Nekad'; statusColor = 'bg-gray-200 text-gray-800'; }
+
+                                        return (
+                                            <div key={req.id} className={`border rounded-lg p-4 flex flex-col md:flex-row justify-between md:items-center ${isApproved ? 'bg-green-50 border-green-200 opacity-70' : isRejected ? 'bg-gray-50 opacity-50' : 'bg-white'}`}>
+                                                <div className="flex-1 space-y-2 w-full">
+                                                    <div className="flex items-center space-x-2">
+                                                        <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${statusColor}`}>
+                                                            {statusText}
+                                                        </span>
+                                                        <span className="text-xs text-gray-400">{(req.timestamp||'').split(' ')[0]}</span>
+                                                    </div>
+                                                    <div className="text-sm text-gray-800">
+                                                        <strong>{reqUser?.name || 'Okänd'}</strong> vill byta:
+                                                        <div className="bg-white p-2 mt-2 mb-2 rounded border inline-block text-xs font-semibold mr-2">{formatShiftName(req.shift1Id)}</div>
+                                                        <br className="md:hidden" />
+                                                        ...mot <strong>{targetUser?.name || 'Okänd'}s</strong> pass:
+                                                        <div className="bg-white p-2 mt-2 rounded border inline-block text-xs font-semibold">{formatShiftName(req.shift2Id)}</div>
+                                                    </div>
+                                                </div>
+                                                
+                                                {/* Knappar för Personal (När kollegan frågar) */}
+                                                {isPendingPeer && currentUser.id === req.shift2UserId && (
+                                                    <div className="flex space-x-2 mt-5 md:mt-0">
+                                                        <button onClick={() => handlePeerReject(req.id)} className="flex-1 md:flex-none bg-white text-red-600 border border-red-200 px-4 py-2.5 rounded text-sm font-bold hover:bg-red-50">Avböj</button>
+                                                        <button onClick={() => handlePeerAccept(req.id)} className="flex-1 md:flex-none bg-green-600 text-white px-4 py-2.5 rounded text-sm font-bold shadow hover:bg-green-700">Acceptera</button>
+                                                    </div>
+                                                )}
+
+                                                {/* Knappar för Admin (När kollegan har sagt Ja) */}
+                                                {isPendingAdmin && isAdmin && (
+                                                    <div className="flex space-x-2 mt-5 md:mt-0">
+                                                        <button onClick={() => handleAdminReject(req.id)} className="flex-1 md:flex-none bg-white text-red-600 border border-red-200 px-4 py-2.5 rounded text-sm font-bold hover:bg-red-50">Neka (Admin)</button>
+                                                        <button onClick={() => handleAdminApprove(req.id)} className="flex-1 md:flex-none bg-green-600 text-white px-4 py-2.5 rounded text-sm font-bold shadow hover:bg-green-700">Godkänn byte</button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* PERSONAL */}
+                        {activeTab === 'personal' && isAdmin && (
+                            <div className="max-w-3xl mx-auto space-y-6">
+                                <div className="flex justify-between items-center mb-4 border-b pb-4">
+                                    <h2 className="text-2xl font-bold">Personal & Rättigheter</h2>
+                                    <button onClick={() => setShowUserModal(true)} className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 shadow-md text-sm font-bold">+ Skapa ny</button>
+                                </div>
+                                <div className="bg-white rounded-lg shadow-sm border divide-y">
+                                    {(users||[]).map(u => {
+                                        if(!u) return null;
+                                        return(
+                                        <div key={u.id} className="p-4 flex justify-between items-center hover:bg-gray-50 transition">
+                                            <div className="flex items-center space-x-3 md:space-x-4 overflow-hidden">
+                                                <div className="min-w-[2.5rem] w-10 h-10 md:w-12 md:h-12 bg-gray-100 rounded-full flex items-center justify-center font-bold text-gray-500">{(u.name||'A').charAt(0)}</div>
+                                                <div className="truncate">
+                                                    <div className="font-bold text-sm md:text-base truncate">{u.name}</div>
+                                                    <div className="text-[10px] md:text-xs text-gray-400 truncate">@{u.username} | {u.email || 'Ingen e-post'}</div>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center space-x-2 md:space-x-4 pl-2">
+                                                <span className="px-2 py-1 md:px-3 rounded-full text-[9px] md:text-[10px] font-bold border bg-gray-50 text-gray-500">{(u.role||'PERSONAL').toUpperCase()}</span>
+                                                {u.id !== currentUser.id && ( 
+                                                    <button onClick={() => { 
+                                                        if(confirm("Är du säker på att du vill radera resursen och all dess tillhörande data? Detta kan inte ångras.")) {
+                                                            setUsers((users||[]).filter(user => user && user.id !== u.id)); 
+                                                            setTemplateShifts((templateShifts||[]).filter(s => s && s.userId !== u.id));
+                                                            setActualShifts((actualShifts||[]).filter(s => s && s.userId !== u.id));
+                                                            setLeaves((leaves||[]).filter(l => l && l.userId !== u.id));
+                                                            setTradeRequests((tradeRequests||[]).filter(r => r && r.shift1UserId !== u.id && r.shift2UserId !== u.id));
+                                                            addLog("Raderade personal", `Tog bort resursen ${u.name}`); 
+                                                        } 
+                                                    }} className="text-xl md:text-base text-gray-300 hover:text-red-500 p-1 md:ml-2">🗑️</button> 
+                                                )}
+                                            </div>
+                                        </div>
+                                    )})}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* LOGGBOK */}
+                        {activeTab === 'loggbok' && isAdmin && (
+                            <div className="bg-white p-4 md:p-6 rounded-lg shadow-sm">
+                                <div className="flex flex-col sm:flex-row justify-between sm:items-end mb-6 pb-6 border-b space-y-3 sm:space-y-0">
+                                    <div>
+                                        <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-800">Händelselogg</h2>
+                                        <p className="text-sm text-gray-500 mt-1">Här sparas automatiskt alla ändringar i schemat.</p>
+                                    </div>
+                                    {(logs||[]).length > 0 && (
+                                        <button onClick={() => { if(confirm("Vill du rensa hela loggen? Denna åtgärd kan inte ångras.")) setLogs([]); }} className="text-sm font-bold text-red-500 hover:text-red-700 bg-red-50 px-3 py-2 rounded self-start sm:self-auto">
+                                            Rensa logg
+                                        </button>
+                                    )}
+                                </div>
+                                
+                                <div className="overflow-x-auto border rounded bg-white">
+                                    <table className="min-w-[600px] w-full divide-y">
+                                        <thead className="bg-gray-50">
+                                            <tr>
+                                                <th className="px-4 py-3 text-left text-[10px] md:text-xs font-bold text-gray-500 uppercase w-32 border-b">Tidpunkt</th>
+                                                <th className="px-4 py-3 text-left text-[10px] md:text-xs font-bold text-gray-500 uppercase w-32 border-b">Användare</th>
+                                                <th className="px-4 py-3 text-left text-[10px] md:text-xs font-bold text-gray-500 uppercase w-40 border-b">Händelse</th>
+                                                <th className="px-4 py-3 text-left text-[10px] md:text-xs font-bold text-gray-500 uppercase border-b">Detaljer</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="bg-white divide-y">
+                                            {!(logs||[]).length && (
+                                                <tr>
+                                                    <td colSpan="4" className="px-4 py-8 text-center text-gray-400 italic text-sm">Inga händelser loggade ännu.</td>
+                                                </tr>
+                                            )}
+                                            {(logs||[]).map(log => {
+                                                if(!log) return null;
+                                                return (
+                                                <tr key={log.id} className="hover:bg-gray-50">
+                                                    <td className="px-4 py-3 text-[10px] md:text-xs text-gray-500 whitespace-nowrap text-left border-b border-gray-100">{(log.timestamp||'').split(' ')[0]} <br className="md:hidden"/> {(log.timestamp||'').split(' ')[1]}</td>
+                                                    <td className="px-4 py-3 text-[10px] md:text-xs font-bold text-slate-700 text-left border-b border-gray-100">{log.userName}</td>
+                                                    <td className="px-4 py-3 text-[10px] md:text-xs font-medium text-indigo-600 text-left border-b border-gray-100">{log.action}</td>
+                                                    <td className="px-4 py-3 text-[10px] md:text-xs text-gray-600 text-left border-b border-gray-100">{log.details}</td>
+                                                </tr>
+                                            )})}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    {/* --- MODALER --- */}
+                    
+                    {/* MODAL: LÄGG TILL/REDIGERA RUTIN */}
+                    {showRoutineModal && (
+                        <div className="fixed inset-0 modal-bg flex items-center justify-center z-[100] p-4">
+                            <div className="bg-white p-6 rounded-lg w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
+                                <h3 className="text-xl font-bold mb-4">{editingRoutine ? 'Redigera lathund' : 'Skapa ny lathund'}</h3>
+                                <form onSubmit={handleSaveRoutine} className="space-y-4">
+                                    <div>
+                                        <label className="text-xs font-bold text-gray-500">Titel</label>
+                                        <input type="text" className="w-full text-base md:text-sm border p-3 md:p-2 rounded mt-1 bg-gray-50 focus:bg-white" placeholder="T.ex. Öppningsrutiner" value={routineData.title} onChange={e => setRoutineData({...routineData, title: e.target.value})} required />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-bold text-gray-500">Checklista / Beskrivning</label>
+                                        <textarea className="w-full text-base md:text-sm border p-3 md:p-2 rounded mt-1 bg-gray-50 focus:bg-white" rows="6" placeholder="1. Gör detta...&#10;2. Gör sedan detta..." value={routineData.content} onChange={e => setRoutineData({...routineData, content: e.target.value})} required></textarea>
+                                    </div>
+                                    <div className="flex flex-col md:flex-row justify-end md:space-x-2 pt-4 space-y-2 md:space-y-0">
+                                        <button type="button" onClick={() => {setShowRoutineModal(false); setEditingRoutine(null);}} className="w-full md:w-auto px-4 py-3 md:py-2 text-gray-500 border rounded hover:bg-gray-50">Avbryt</button>
+                                        <button type="submit" className="w-full md:w-auto bg-indigo-600 text-white px-6 py-3 md:py-2 rounded shadow hover:bg-indigo-700 font-bold">Spara lathund</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL: LÄGG TILL LEDIGHET */}
+                    {showLeaveModal && (
+                        <div className="fixed inset-0 modal-bg flex items-center justify-center z-[100] p-4">
+                            <div className="bg-white p-6 rounded-lg w-full max-w-sm shadow-2xl max-h-[90vh] overflow-y-auto">
+                                <h3 className="text-xl font-bold mb-4">Registrera frånvaro</h3>
+                                <form onSubmit={handleAddLeave} className="space-y-4">
+                                    <div>
+                                        <label className="text-xs font-bold text-gray-500">Resurs</label>
+                                        <select className="w-full text-base md:text-sm border p-3 md:p-2 rounded mt-1 bg-gray-50" value={leaveData.userId} onChange={e => setLeaveData({...leaveData, userId: e.target.value})} required>
+                                            <option value="">Välj person...</option>
+                                            {(users||[]).map(u => u && <option key={u.id} value={u.id}>{u.name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-bold text-gray-500">Typ av frånvaro</label>
+                                        <select className="w-full text-base md:text-sm border p-3 md:p-2 rounded mt-1 bg-gray-50" value={leaveData.type} onChange={e => setLeaveData({...leaveData, type: e.target.value})} required>
+                                            <option value="Semester">Semester</option>
+                                            <option value="Sjuk">Sjukdom</option>
+                                            <option value="VAB">VAB / Föräldraledig</option>
+                                            <option value="Tjänstledig">Övrig Tjänstledighet</option>
+                                        </select>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div>
+                                            <label className="text-xs font-bold text-gray-500">Från datum</label>
+                                            <input type="date" className="w-full text-base border p-3 md:p-2 rounded mt-1" value={leaveData.startDate} onChange={e => setLeaveData({...leaveData, startDate: e.target.value})} required />
+                                        </div>
+                                        <div>
+                                            <label className="text-xs font-bold text-gray-500">Till datum</label>
+                                            <input type="date" className="w-full text-base border p-3 md:p-2 rounded mt-1" value={leaveData.endDate} onChange={e => setLeaveData({...leaveData, endDate: e.target.value})} required />
+                                        </div>
+                                    </div>
+                                    <div className="flex flex-col md:flex-row justify-end md:space-x-2 pt-4 space-y-2 md:space-y-0">
+                                        <button type="button" onClick={() => setShowLeaveModal(false)} className="w-full md:w-auto px-4 py-3 md:py-2 text-gray-500 border rounded hover:bg-gray-50">Avbryt</button>
+                                        <button type="submit" className="w-full md:w-auto bg-indigo-600 text-white px-6 py-3 md:py-2 rounded shadow font-bold hover:bg-indigo-700">Spara frånvaro</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL: BEGÄR PASSBYTE */}
+                    {showTradeModal && tradeShift1 && (
+                        <div className="fixed inset-0 modal-bg flex items-center justify-center z-[100] p-4">
+                            <div className="bg-white p-6 rounded-lg w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
+                                <h3 className="text-xl font-bold mb-4">Begär passbyte</h3>
+                                <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-4 text-sm text-blue-800">
+                                    <strong>Ditt pass:</strong> {formatShiftName(tradeShift1.id)}
+                                </div>
+                                <form onSubmit={handleCreateTrade} className="space-y-4">
+                                    <div>
+                                        <label className="text-xs font-bold text-gray-500">Välj kollegans pass att byta mot:</label>
+                                        <select 
+                                            className="w-full text-base md:text-sm border p-3 md:p-2 rounded mt-1 bg-gray-50" 
+                                            value={tradeShift2Id} 
+                                            onChange={e => setTradeShift2Id(e.target.value)} 
+                                            required
+                                        >
+                                            <option value="">-- Välj ett pass i systemet --</option>
+                                            {[...(templateShifts||[]), ...(actualShifts||[])]
+                                                .filter(s => s && s.userId !== currentUser.id)
+                                                .sort((a,b) => (a.userId||'').localeCompare(b.userId||''))
+                                                .map(s => (
+                                                    <option key={s.id} value={s.id}>
+                                                        {formatShiftName(s.id)}
+                                                    </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="flex flex-col md:flex-row justify-end md:space-x-2 pt-4 space-y-2 md:space-y-0">
+                                        <button type="button" onClick={() => {setShowTradeModal(false); setTradeShift1(null);}} className="w-full md:w-auto px-4 py-3 md:py-2 text-gray-500 border rounded hover:bg-gray-50">Avbryt</button>
+                                        <button type="submit" className="w-full md:w-auto bg-blue-600 text-white px-6 py-3 md:py-2 rounded shadow hover:bg-blue-700 font-bold">Skicka förfrågan</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* LÖSENORDSMODAL */}
+                    {showPasswordModal && (
+                        <div className="fixed inset-0 modal-bg flex items-center justify-center z-[100] p-4">
+                            <div className="bg-white p-6 rounded-lg w-full max-w-sm shadow-2xl max-h-[90vh] overflow-y-auto">
+                                <h3 className="text-xl font-bold mb-4">Byt lösenord</h3>
+                                {passwordError && <div className="mb-4 bg-red-50 text-red-600 p-3 rounded text-xs border border-red-200">{passwordError}</div>}
+                                <form onSubmit={handleChangePassword} className="space-y-4">
+                                    <div><label className="text-xs font-bold text-gray-500">Nuvarande lösenord</label><input type="password" required className="w-full text-base border p-3 md:p-2 rounded mt-1" value={passwordData.old} onChange={e => setPasswordData({...passwordData, old: e.target.value})} /></div>
+                                    <div><label className="text-xs font-bold text-gray-500">Nytt lösenord (minst 3 tecken)</label><input type="password" required minLength="3" className="w-full text-base border p-3 md:p-2 rounded mt-1" value={passwordData.new} onChange={e => setPasswordData({...passwordData, new: e.target.value})} /></div>
+                                    <div><label className="text-xs font-bold text-gray-500">Bekräfta nytt lösenord</label><input type="password" required minLength="3" className="w-full text-base border p-3 md:p-2 rounded mt-1" value={passwordData.confirm} onChange={e => setPasswordData({...passwordData, confirm: e.target.value})} /></div>
+                                    <div className="flex flex-col md:flex-row justify-end md:space-x-2 pt-4 space-y-2 md:space-y-0"><button type="button" onClick={() => {setShowPasswordModal(false); setPasswordError('');}} className="w-full md:w-auto px-4 py-3 md:py-2 text-gray-500 border rounded hover:bg-gray-50">Avbryt</button><button type="submit" className="w-full md:w-auto bg-indigo-600 text-white px-6 py-3 md:py-2 rounded shadow hover:bg-indigo-700 font-bold">Uppdatera</button></div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* SKAPA RESURS MODAL */}
+                    {showUserModal && (
+                        <div className="fixed inset-0 modal-bg flex items-center justify-center z-[100] p-4">
+                            <div className="bg-white p-6 rounded-lg w-full max-w-sm shadow-2xl max-h-[90vh] overflow-y-auto">
+                                <h3 className="text-xl font-bold mb-4">Skapa ny resurs</h3>
+                                <form onSubmit={handleAddUser} className="space-y-4">
+                                    <div><label className="text-xs font-bold text-gray-500">Fullständigt namn</label><input type="text" className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newUser.name} onChange={e => setNewUser({...newUser, name: e.target.value})} required /></div>
+                                    <div><label className="text-xs font-bold text-gray-500">Användarnamn</label><input type="text" className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} required /></div>
+                                    <div><label className="text-xs font-bold text-gray-500">E-postadress</label><input type="email" className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newUser.email} onChange={e => setNewUser({...newUser, email: e.target.value})} required /></div>
+                                    <div><label className="text-xs font-bold text-gray-500">Start-lösenord (minst 3 tecken)</label><input type="text" minLength="3" className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newUser.password} onChange={e => setNewUser({...newUser, password: e.target.value})} required /></div>
+                                    <div><label className="text-xs font-bold text-gray-500">Roll</label><select className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newUser.role} onChange={e => setNewUser({...newUser, role: e.target.value})}><option value="Personal">Personal</option><option value="Admin">Admin</option></select></div>
+                                    <div className="flex flex-col md:flex-row justify-end md:space-x-2 pt-4 space-y-2 md:space-y-0"><button type="button" onClick={() => setShowUserModal(false)} className="w-full md:w-auto px-4 py-3 md:py-2 text-gray-500 border rounded hover:bg-gray-50">Avbryt</button><button type="submit" className="w-full md:w-auto bg-indigo-600 text-white px-6 py-3 md:py-2 rounded font-bold">Skapa resurs</button></div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* LÄGG TILL I RULLSCHEMA MODAL */}
+                    {showTemplateModal && (
+                        <div className="fixed inset-0 modal-bg flex items-center justify-center z-[100] p-4">
+                            <div className="bg-white p-6 rounded-lg w-full max-w-sm shadow-2xl max-h-[90vh] overflow-y-auto">
+                                <h3 className="text-xl font-bold mb-4">Lägg till i rullschema</h3>
+                                <form onSubmit={handleAddTemplateShift} className="space-y-4">
+                                    <div className="grid grid-cols-2 gap-2"><select className="border p-3 md:p-2 text-base rounded bg-gray-50" value={newTempShift?.week || 1} onChange={e => setNewTempShift({...newTempShift, week: e.target.value})}>{Array.from({ length: cycleWeeks }, (_, i) => i + 1).map(w => <option key={w} value={w}>Vecka {w}</option>)}</select><select className="border p-3 md:p-2 text-base rounded bg-gray-50" value={newTempShift?.day || 1} onChange={e => setNewTempShift({...newTempShift, day: e.target.value})}>{["Mån","Tis","Ons","Tor","Fre","Lör","Sön"].map((d,i) => <option key={d} value={i+1}>{d}</option>)}</select></div>
+                                    <select className="w-full border p-3 md:p-2 text-base rounded" value={newTempShift?.userId || ''} onChange={e => setNewTempShift({...newTempShift, userId: e.target.value})} required><option value="">Välj person...</option>{(users||[]).map(u => u && <option key={u.id} value={u.id}>{u.name}</option>)}</select>
+                                    <div className="grid grid-cols-2 gap-2"><div><label className="text-xs font-bold text-gray-500">Starttid</label><select className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newTempShift?.start || '08:00'} onChange={e => setNewTempShift({...newTempShift, start: e.target.value})}>{(TIME_OPTIONS||[]).map(time => <option key={`start-${time}`} value={time}>{time}</option>)}</select></div><div><label className="text-xs font-bold text-gray-500">Sluttid</label><select className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newTempShift?.end || '17:00'} onChange={e => setNewTempShift({...newTempShift, end: e.target.value})}>{(TIME_OPTIONS||[]).map(time => <option key={`end-${time}`} value={time}>{time}</option>)}</select></div></div>
+                                    <div className="flex flex-col md:flex-row justify-end md:space-x-2 pt-4 space-y-2 md:space-y-0"><button type="button" onClick={() => setShowTemplateModal(false)} className="w-full md:w-auto px-4 py-3 md:py-2 text-gray-500 border rounded hover:bg-gray-50">Avbryt</button><button type="submit" className="w-full md:w-auto bg-indigo-600 text-white px-6 py-3 md:py-2 rounded shadow font-bold hover:bg-indigo-700">Spara pass</button></div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* LÄGG TILL KALENDERPASS MODAL */}
+                    {showActualShiftModal && (
+                        <div className="fixed inset-0 modal-bg flex items-center justify-center z-[100] p-4">
+                            <div className="bg-white p-6 rounded-lg w-full max-w-sm shadow-2xl max-h-[90vh] overflow-y-auto">
+                                <h3 className="text-xl font-bold mb-2">Lägg till kalenderpass</h3>
+                                <p className="text-sm text-gray-500 mb-4 font-bold">Datum: {newActualShift?.date || ''}</p>
+                                <form onSubmit={handleAddActualShift} className="space-y-4">
+                                    <select className="w-full border p-3 md:p-2 text-base rounded" value={newActualShift?.userId || ''} onChange={e => setNewActualShift({...newActualShift, userId: e.target.value})} required><option value="">Välj person...</option>{(users||[]).map(u => u && <option key={u.id} value={u.id}>{u.name}</option>)}</select>
+                                    <div className="grid grid-cols-2 gap-2"><div><label className="text-xs font-bold text-gray-500">Starttid</label><select className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newActualShift?.start || '08:00'} onChange={e => setNewActualShift({...newActualShift, start: e.target.value})}>{(TIME_OPTIONS||[]).map(time => <option key={`start-${time}`} value={time}>{time}</option>)}</select></div><div><label className="text-xs font-bold text-gray-500">Sluttid</label><select className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newActualShift?.end || '17:00'} onChange={e => setNewActualShift({...newActualShift, end: e.target.value})}>{(TIME_OPTIONS||[]).map(time => <option key={`end-${time}`} value={time}>{time}</option>)}</select></div></div>
+                                    <div className="flex flex-col md:flex-row justify-end md:space-x-2 pt-4 space-y-2 md:space-y-0"><button type="button" onClick={() => setShowActualShiftModal(false)} className="w-full md:w-auto px-4 py-3 md:py-2 text-gray-500 border rounded hover:bg-gray-50">Avbryt</button><button type="submit" className="w-full md:w-auto bg-green-600 text-white px-6 py-3 md:py-2 rounded shadow hover:bg-green-700 font-bold">Spara</button></div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* REDIGERA BEFINTLIGT PASS MODAL */}
+                    {editingShift && (
+                        <div className="fixed inset-0 modal-bg flex items-center justify-center z-[100] p-4">
+                            <div className="bg-white p-6 rounded-lg w-full max-w-sm shadow-2xl max-h-[90vh] overflow-y-auto">
+                                <h3 className="text-xl font-bold mb-4">Redigera pass</h3>
+                                {!editingShift.isExtra && !editingShift.targetDateStr && <div className="mb-4 bg-orange-50 text-orange-800 p-3 rounded text-xs border border-orange-200"><strong>OBS:</strong> Detta pass tillhör rullschemat. Ändrar du här, ändras den för <strong>alla kommande veckor</strong>.</div>}
+                                {!editingShift.isExtra && editingShift.targetDateStr && <div className="mb-4 bg-indigo-50 text-indigo-800 p-3 rounded text-xs border border-indigo-200"><strong>TILLFÄLLIG ÄNDRING:</strong> Ändringar här gäller <strong>endast</strong> för valt datum: {editingShift.targetDateStr}.</div>}
+                                <form onSubmit={handleSaveEditShift} className="space-y-4">
+                                    <div><label className="text-xs font-bold text-gray-500">Tilldelad resurs</label><select className="w-full text-base border p-3 md:p-2 rounded mt-1" value={editingShift?.userId || ''} onChange={e => setEditingShift({...editingShift, userId: e.target.value})} required><option value="">Välj person...</option>{(users||[]).map(u => u && <option key={u.id} value={u.id}>{u.name}</option>)}</select></div>
+                                    <div className="grid grid-cols-2 gap-2"><div><label className="text-xs font-bold text-gray-500">Starttid</label><select className="w-full text-base border p-3 md:p-2 rounded mt-1" value={editingShift?.start || '08:00'} onChange={e => setEditingShift({...editingShift, start: e.target.value})}>{(TIME_OPTIONS||[]).map(time => <option key={`edit-start-${time}`} value={time}>{time}</option>)}</select></div><div><label className="text-xs font-bold text-gray-500">Sluttid</label><select className="w-full text-base border p-3 md:p-2 rounded mt-1" value={editingShift?.end || '17:00'} onChange={e => setEditingShift({...editingShift, end: e.target.value})}>{(TIME_OPTIONS||[]).map(time => <option key={`edit-end-${time}`} value={time}>{time}</option>)}</select></div></div>
+                                    <div className="flex flex-col md:flex-row justify-end md:space-x-2 pt-4 space-y-2 md:space-y-0"><button type="button" onClick={() => setEditingShift(null)} className="w-full md:w-auto px-4 py-3 md:py-2 text-gray-500 border rounded hover:bg-gray-50">Avbryt</button><button type="submit" className="w-full md:w-auto bg-indigo-600 text-white px-6 py-3 md:py-2 rounded shadow hover:bg-indigo-700 font-bold">Spara ändringar</button></div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<ErrorBoundary><App /></ErrorBoundary>);
+    </script>
+</body>
+</html>
