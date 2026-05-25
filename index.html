@@ -142,10 +142,8 @@
         ];
 
         const INITIAL_TEMPLATE_SHIFTS = [
-            // Nya pass för att testa byten mellan Admins
-            { id: 't90', cycleWeek: 1, dayOfWeek: 1, start: '08:00', end: '16:00', userId: 'u0' }, // Daniel
-            { id: 't91', cycleWeek: 1, dayOfWeek: 2, start: '09:00', end: '17:00', userId: 'u1' }, // Tommy
-
+            { id: 't90', cycleWeek: 1, dayOfWeek: 1, start: '08:00', end: '16:00', userId: 'u0' },
+            { id: 't91', cycleWeek: 1, dayOfWeek: 2, start: '09:00', end: '17:00', userId: 'u1' },
             { id: 't1', cycleWeek: 1, dayOfWeek: 1, start: '09:00', end: '16:00', userId: 'u2' },
             { id: 't2', cycleWeek: 1, dayOfWeek: 2, start: '16:00', end: '22:00', userId: 'u2' },
             { id: 't3', cycleWeek: 1, dayOfWeek: 3, start: '10:00', end: '16:00', userId: 'u2' },
@@ -244,7 +242,8 @@
             
             const [newUser, setNewUser] = useState({ name: '', username: '', email: '', role: 'Personal' });
             
-            const [newTempShift, setNewTempShift] = useState({ week: 1, days: [1], start: '08:00', end: '17:00', userId: '' });
+            // --- Lås-egenskap tillagd för rullschemat ---
+            const [newTempShift, setNewTempShift] = useState({ week: 1, days: [1], start: '08:00', end: '17:00', userId: '', lockUser: false });
             const [newActualShift, setNewActualShift] = useState({ date: '', start: '08:00', end: '17:00', userId: '' });
             const [routineData, setRoutineData] = useState({ title: '', content: '' });
             const [leaveData, setLeaveData] = useState({ userId: '', startDate: '', endDate: '', type: 'Semester' });
@@ -766,7 +765,6 @@
                 return { name: d.toLocaleDateString('sv-SE', { weekday: 'short' }).toUpperCase(), date: d.getDate(), dayNum: i + 1, fullDateStr: formatDateStr(d), dateObj: d };
             });
 
-            // --- UPPDATERAD: Fixade buggen där Admin inte fick röda notisprickar för peer-förfrågningar ---
             const tradesActionRequiredCount = currentUser ? (tradeRequests || []).filter(r => {
                 if (!r) return false;
                 if (isAdmin && r.status === 'pending_admin') return true;
@@ -1139,7 +1137,8 @@
                                             </select>
                                         </div>
                                         
-                                        <button onClick={() => { setNewTempShift({ week: 1, days: [], start: '08:00', end: '17:00', userId: '' }); setShowTemplateModal(true); }} className="bg-indigo-600 text-white px-4 py-2.5 rounded-md hover:bg-indigo-700 shadow-md font-bold w-full sm:w-auto">
+                                        {/* Knapp utan låst resurs */}
+                                        <button onClick={() => { setNewTempShift({ week: 1, days: [], start: '08:00', end: '17:00', userId: '', lockUser: false }); setShowTemplateModal(true); }} className="bg-indigo-600 text-white px-4 py-2.5 rounded-md hover:bg-indigo-700 shadow-md font-bold w-full sm:w-auto">
                                             + Nytt pass
                                         </button>
                                     </div>
@@ -1198,9 +1197,10 @@
                                                                         </div>
                                                                     ))}
                                                                     
+                                                                    {/* Klick på enskild rad LÅSER menyn till vald resurs */}
                                                                     {!hasShift && (
                                                                         <div 
-                                                                            onClick={() => { setNewTempShift({ week: weekNum, days: [dayNum], start: '08:00', end: '17:00', userId: u.id }); setShowTemplateModal(true); }}
+                                                                            onClick={() => { setNewTempShift({ week: weekNum, days: [dayNum], start: '08:00', end: '17:00', userId: u.id, lockUser: true }); setShowTemplateModal(true); }}
                                                                             className="opacity-0 group-hover/cell:opacity-100 absolute inset-0 cursor-pointer flex items-center justify-center bg-indigo-50/50 text-indigo-600 font-bold text-xl transition-opacity"
                                                                             title="Lägg till pass"
                                                                         >
@@ -1630,11 +1630,11 @@
                                                     <label key={d} className={`flex items-center space-x-1 border px-3 py-2 rounded-md cursor-pointer text-xs select-none transition-all ${isChecked ? 'bg-indigo-600 border-indigo-600 text-white font-bold shadow-sm' : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'}`}>
                                                         <input 
                                                             type="checkbox" 
-                                                            className="hidden" 
+                                                            className="sr-only" 
                                                             checked={isChecked} 
                                                             onChange={(e) => {
                                                                 const updatedDays = e.target.checked 
-                                                                    ? [...(newTempShift.days || []), dayNum]
+                                                                    ? [...new Set([...(newTempShift.days || []), dayNum])]
                                                                     : (newTempShift.days || []).filter(day => day !== dayNum);
                                                                 setNewTempShift({...newTempShift, days: updatedDays});
                                                             }}
@@ -1646,9 +1646,16 @@
                                         </div>
                                     </div>
 
+                                    {/* LÅSNING AV RESURS */}
                                     <div className="grid grid-cols-1 gap-2">
                                         <label className="text-xs font-bold text-gray-500">Tilldelad person</label>
-                                        <select className="w-full border p-3 md:p-2 text-base rounded bg-gray-50" value={newTempShift?.userId || ''} onChange={e => setNewTempShift({...newTempShift, userId: e.target.value})} required>
+                                        <select 
+                                            className={`w-full border p-3 md:p-2 text-base rounded ${newTempShift?.lockUser ? 'bg-gray-200 cursor-not-allowed text-gray-500 font-bold' : 'bg-gray-50'}`} 
+                                            value={newTempShift?.userId || ''} 
+                                            onChange={e => !newTempShift?.lockUser && setNewTempShift({...newTempShift, userId: e.target.value})} 
+                                            required 
+                                            disabled={newTempShift?.lockUser}
+                                        >
                                             <option value="">Välj person...</option>
                                             {(users||[]).map(u => u && <option key={u.id} value={u.id}>{u.name}</option>)}
                                         </select>
