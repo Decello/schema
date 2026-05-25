@@ -241,6 +241,7 @@
             const [editingRoutine, setEditingRoutine] = useState(null); 
             
             const [newUser, setNewUser] = useState({ name: '', username: '', email: '', role: 'Personal' });
+            
             const [newTempShift, setNewTempShift] = useState({ week: 1, days: [1], start: '08:00', end: '17:00', userId: '', lockUser: false });
             const [newActualShift, setNewActualShift] = useState({ date: '', start: '08:00', end: '17:00', userId: '' });
             const [routineData, setRoutineData] = useState({ title: '', content: '' });
@@ -531,12 +532,10 @@
                 }
             };
 
-            // --- UPPDATERAD LOGIK FÖR BYTEN: Tar datumet automatiskt från dropdownen! ---
             const handleCreateTrade = (e) => {
                 e.preventDefault();
                 if(!tradeShift2Id || !tradeShift1) return;
                 
-                // Vi splittar värdet som vi lagt i dropdownen ("shiftId|datum")
                 const [s2Id, s2Date] = tradeShift2Id.split('|');
                 
                 const shift2 = [...(templateShifts || []), ...(actualShifts || [])].find(s => s && s.id === s2Id);
@@ -814,7 +813,10 @@
                 return { name: d.toLocaleDateString('sv-SE', { weekday: 'short' }).toUpperCase(), date: d.getDate(), dayNum: i + 1, fullDateStr: formatDateStr(d), dateObj: d };
             });
 
-            // --- UPPDATERAD: Skapar en lista med tillgängliga pass för byten utifrån den specifika veckan vi tittar på ---
+            // --- SKAPA AKTUELL TIDPUNKT FÖR JÄMFÖRELSE ---
+            const nu = new Date();
+            const aktuellTidStr = `${formatDateStr(nu)} ${String(nu.getHours()).padStart(2, '0')}:${String(nu.getMinutes()).padStart(2, '0')}`;
+
             let availableTradeShifts = [];
             if (showTradeModal && tradeShift1) {
                 weekDays.forEach(day => {
@@ -828,11 +830,16 @@
                     });
 
                     [...tShifts, ...aShifts].forEach(shift => {
-                        if (shift.userId !== currentUser.id && !isUserOnLeave(shift.userId, day.fullDateStr)) {
-                            availableTradeShifts.push({
-                                ...shift,
-                                targetDateStr: day.fullDateStr
-                            });
+                        // Kontrollera om passet är i framtiden (passet datum + starttid jämfört med nu)
+                        const passTidStr = `${day.fullDateStr} ${shift.start || '00:00'}`;
+                        
+                        if (passTidStr > aktuellTidStr) {
+                            if (shift.userId !== currentUser.id && !isUserOnLeave(shift.userId, day.fullDateStr)) {
+                                availableTradeShifts.push({
+                                    ...shift,
+                                    targetDateStr: day.fullDateStr
+                                });
+                            }
                         }
                     });
                 });
@@ -1047,6 +1054,10 @@
                                                     {finalShifts.map(shift => {
                                                         const user = (users||[]).find(u => u && u.id === shift.userId);
                                                         const isMyShift = currentUser.id === shift.userId;
+                                                        
+                                                        const passTidStr = `${day.fullDateStr} ${shift.start || '00:00'}`;
+                                                        const isPastShift = passTidStr < aktuellTidStr;
+
                                                         return (
                                                             <div key={shift.id} className={`p-3 rounded border-l-4 relative group ${user?.color || 'bg-gray-50 border-gray-300'}`}>
                                                                 <div className="font-bold text-sm md:text-xs whitespace-nowrap">{shift.start} - {shift.end}</div>
@@ -1059,7 +1070,7 @@
                                                                             <button onClick={() => handleDeleteShiftInCalendar(shift.id, day.fullDateStr)} className="text-[10px] text-red-500 font-semibold hover:underline">Radera</button>
                                                                         </>
                                                                     )}
-                                                                    {isMyShift && (
+                                                                    {isMyShift && !isPastShift && (
                                                                         <button onClick={() => { setTradeShift1({...shift, targetDateStr: day.fullDateStr}); setShowTradeModal(true); }} className="text-[10px] text-blue-600 font-bold hover:underline bg-blue-50 px-2 py-1 rounded ml-auto">
                                                                             Byt pass ⇄
                                                                         </button>
