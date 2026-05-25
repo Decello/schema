@@ -142,7 +142,7 @@
         ];
 
         const INITIAL_TEMPLATE_SHIFTS = [
-            { id: 't90', cycleWeek: 1, dayOfWeek: 1, start: '08:00', end: '16:00', userId: 'u0' },
+            { id: 't90', cycleWeek: 1, dayOfWeek: 1, start: '08:00', end: '16:00', userId: 'u0' }, 
             { id: 't91', cycleWeek: 1, dayOfWeek: 2, start: '09:00', end: '17:00', userId: 'u1' },
             { id: 't1', cycleWeek: 1, dayOfWeek: 1, start: '09:00', end: '16:00', userId: 'u2' },
             { id: 't2', cycleWeek: 1, dayOfWeek: 2, start: '16:00', end: '22:00', userId: 'u2' },
@@ -242,7 +242,6 @@
             
             const [newUser, setNewUser] = useState({ name: '', username: '', email: '', role: 'Personal' });
             
-            // --- Lås-egenskap tillagd för rullschemat ---
             const [newTempShift, setNewTempShift] = useState({ week: 1, days: [1], start: '08:00', end: '17:00', userId: '', lockUser: false });
             const [newActualShift, setNewActualShift] = useState({ date: '', start: '08:00', end: '17:00', userId: '' });
             const [routineData, setRoutineData] = useState({ title: '', content: '' });
@@ -253,6 +252,7 @@
 
             const [tradeShift1, setTradeShift1] = useState(null); 
             const [tradeShift2Id, setTradeShift2Id] = useState('');
+            const [tradeShift2Date, setTradeShift2Date] = useState(''); 
             const [newMessageText, setNewMessageText] = useState('');
 
             const unnotifiedRequests = currentUser ? (tradeRequests || []).filter(r => {
@@ -326,8 +326,18 @@
             const handleLogout = () => { setCurrentUser(null); setActiveTab('veckoschema'); setShowUserMenu(false); };
 
             const addLog = (action, details) => {
-                const newLog = { id: generateUniqueId('l'), timestamp: new Date().toLocaleString('sv-SE'), userName: currentUser?.name || 'System', action, details };
-                setLogs(prev => [newLog, ...(prev || [])]);
+                const newLog = { 
+                    id: generateUniqueId('l'), 
+                    timestamp: new Date().toLocaleString('sv-SE'), 
+                    userName: currentUser?.name || 'System', 
+                    action, 
+                    details 
+                };
+                
+                setLogs(prev => {
+                    const updatedLogs = [newLog, ...(prev || [])];
+                    return updatedLogs.slice(0, 200); 
+                });
             };
 
             const handleChangePassword = (e) => {
@@ -529,11 +539,24 @@
                 const shift2 = [...(templateShifts || []), ...(actualShifts || [])].find(s => s && s.id === tradeShift2Id);
                 if(!shift2) return;
 
+                const date1 = tradeShift1.targetDateStr || tradeShift1.dateStr;
+                let date2 = shift2.dateStr; 
+                
+                if (shift2.id.startsWith('t')) {
+                    if (!tradeShift2Date) {
+                        alert("Du måste ange vilket datum kollegans pass gäller.");
+                        return;
+                    }
+                    date2 = tradeShift2Date;
+                }
+
                 const req = {
                     id: generateUniqueId('req'),
                     shift1Id: tradeShift1.id,
+                    shift1Date: date1,
                     shift1UserId: currentUser.id,
                     shift2Id: shift2.id,
+                    shift2Date: date2,
                     shift2UserId: shift2.userId,
                     status: 'pending_peer',
                     timestamp: new Date().toLocaleString('sv-SE'),
@@ -541,12 +564,14 @@
                     initiatorNotified: true, 
                     targetNotified: false
                 };
+                
                 setTradeRequests([...(tradeRequests || []), req]);
                 setShowTradeModal(false);
                 setTradeShift1(null);
                 setTradeShift2Id('');
+                setTradeShift2Date('');
                 alert('Din förfrågan har skickats till din kollega!');
-                addLog("Passbyte begärt", `Av ${currentUser?.name || 'Okänd'} mot pass tillhörande ${(users || []).find(u=>u&&u.id===shift2.userId)?.name || 'Okänd'}`);
+                addLog("Passbyte begärt", `Gäller datum: ${date1} mot ${date2}`);
             };
 
             const handlePeerAccept = (reqId) => {
@@ -566,13 +591,34 @@
                 const req = (tradeRequests || []).find(r => r && r.id === reqId);
                 if(!req) return;
 
-                const updateShiftUser = (shiftId, newUserId) => {
-                    if((shiftId || '').startsWith('t')) { setTemplateShifts(prev => (prev || []).map(s => s && s.id === shiftId ? {...s, userId: newUserId} : s)); } 
-                    else { setActualShifts(prev => (prev || []).map(s => s && s.id === shiftId ? {...s, userId: newUserId} : s)); }
+                let newActuals = [...(actualShifts || [])];
+
+                const applyTrade = (shiftId, newUserId, targetDate) => {
+                    if((shiftId || '').startsWith('t')) {
+                        const origTemplate = templateShifts.find(t => t.id === shiftId);
+                        if (origTemplate && targetDate) {
+                            const overrideShift = {
+                                id: generateUniqueId('a'),
+                                dateStr: targetDate,
+                                start: origTemplate.start,
+                                end: origTemplate.end,
+                                userId: newUserId,
+                                replacesTemplateId: origTemplate.id,
+                                action: 'override',
+                                isExtra: true
+                            };
+                            newActuals.push(overrideShift);
+                        }
+                    } else {
+                        newActuals = newActuals.map(s => s.id === shiftId ? {...s, userId: newUserId} : s);
+                    }
                 };
 
-                updateShiftUser(req.shift1Id, req.shift2UserId);
-                updateShiftUser(req.shift2Id, req.shift1UserId);
+                applyTrade(req.shift1Id, req.shift2UserId, req.shift1Date);
+                applyTrade(req.shift2Id, req.shift1UserId, req.shift2Date);
+
+                setActualShifts(newActuals);
+
                 setTradeRequests(prev => (prev || []).map(r => r && r.id === reqId ? {...r, status: 'approved', initiatorNotified: false, targetNotified: false} : r));
                 addLog("Passbyte godkänt", `Byte mellan ${(users || []).find(u=>u&&u.id===req.shift1UserId)?.name || 'Okänd'} och ${(users || []).find(u=>u&&u.id===req.shift2UserId)?.name || 'Okänd'} genomfört.`);
             };
@@ -602,6 +648,7 @@
             const handleSendMessage = (e) => {
                 e.preventDefault();
                 if(!newMessageText.trim()) return;
+                
                 const newMsg = {
                     id: generateUniqueId('m'),
                     senderId: currentUser.id,
@@ -612,7 +659,15 @@
                     readBy: [currentUser.id], 
                     notifiedUsers: [currentUser.id] 
                 };
-                setMessages([...(messages || []), newMsg]);
+                
+                setMessages(prev => {
+                    const updatedMessages = [...(prev || []), newMsg];
+                    if (updatedMessages.length > 100) {
+                        return updatedMessages.slice(updatedMessages.length - 100);
+                    }
+                    return updatedMessages;
+                });
+                
                 setNewMessageText('');
                 addLog("Skickade meddelande", `Skickat av ${currentUser.name} till ${isAdmin ? 'alla' : 'admin'}`);
             };
@@ -982,7 +1037,7 @@
                                                                         </>
                                                                     )}
                                                                     {isMyShift && (
-                                                                        <button onClick={() => { setTradeShift1(shift); setShowTradeModal(true); }} className="text-[10px] text-blue-600 font-bold hover:underline bg-blue-50 px-2 py-1 rounded ml-auto">
+                                                                        <button onClick={() => { setTradeShift1({...shift, targetDateStr: day.fullDateStr}); setShowTradeModal(true); }} className="text-[10px] text-blue-600 font-bold hover:underline bg-blue-50 px-2 py-1 rounded ml-auto">
                                                                             Byt pass ⇄
                                                                         </button>
                                                                     )}
@@ -1137,7 +1192,6 @@
                                             </select>
                                         </div>
                                         
-                                        {/* Knapp utan låst resurs */}
                                         <button onClick={() => { setNewTempShift({ week: 1, days: [], start: '08:00', end: '17:00', userId: '', lockUser: false }); setShowTemplateModal(true); }} className="bg-indigo-600 text-white px-4 py-2.5 rounded-md hover:bg-indigo-700 shadow-md font-bold w-full sm:w-auto">
                                             + Nytt pass
                                         </button>
@@ -1197,7 +1251,6 @@
                                                                         </div>
                                                                     ))}
                                                                     
-                                                                    {/* Klick på enskild rad LÅSER menyn till vald resurs */}
                                                                     {!hasShift && (
                                                                         <div 
                                                                             onClick={() => { setNewTempShift({ week: weekNum, days: [dayNum], start: '08:00', end: '17:00', userId: u.id, lockUser: true }); setShowTemplateModal(true); }}
@@ -1348,10 +1401,14 @@
                                                     </div>
                                                     <div className="text-sm text-gray-800">
                                                         <strong>{reqUser?.name || 'Okänd'}</strong> vill byta:
-                                                        <div className="bg-white p-2 mt-2 mb-2 rounded border inline-block text-xs font-semibold mr-2">{formatShiftName(req.shift1Id)}</div>
+                                                        <div className="bg-white p-2 mt-2 mb-2 rounded border inline-block text-xs font-semibold mr-2">
+                                                            <span className="text-blue-600 mr-2">{req.shift1Date}</span>| {formatShiftName(req.shift1Id)}
+                                                        </div>
                                                         <br className="md:hidden" />
                                                         ...mot <strong>{targetUser?.name || 'Okänd'}s</strong> pass:
-                                                        <div className="bg-white p-2 mt-2 rounded border inline-block text-xs font-semibold">{formatShiftName(req.shift2Id)}</div>
+                                                        <div className="bg-white p-2 mt-2 rounded border inline-block text-xs font-semibold">
+                                                            <span className="text-blue-600 mr-2">{req.shift2Date}</span>| {formatShiftName(req.shift2Id)}
+                                                        </div>
                                                     </div>
                                                 </div>
                                                 
@@ -1424,7 +1481,7 @@
                                 <div className="flex flex-col sm:flex-row justify-between sm:items-end mb-6 pb-6 border-b space-y-3 sm:space-y-0">
                                     <div>
                                         <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-800">Händelselogg</h2>
-                                        <p className="text-sm text-gray-500 mt-1">Här sparas automatiskt alla ändringar i schemat.</p>
+                                        <p className="text-sm text-gray-500 mt-1">Här sparas automatiskt alla ändringar i schemat (Max 200 senaste händelserna).</p>
                                     </div>
                                     {(logs||[]).length > 0 && (
                                         <button onClick={() => { if(confirm("Vill du rensa hela loggen? Denna åtgärd kan inte ångras.")) setLogs([]); }} className="text-sm font-bold text-red-500 hover:text-red-700 bg-red-50 px-3 py-2 rounded self-start sm:self-auto">
@@ -1538,7 +1595,8 @@
                             <div className="bg-white p-6 rounded-lg w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
                                 <h3 className="text-xl font-bold mb-4">Begär passbyte</h3>
                                 <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-4 text-sm text-blue-800">
-                                    <strong>Ditt pass:</strong> {formatShiftName(tradeShift1.id)}
+                                    <strong>Ditt pass:</strong> {formatShiftName(tradeShift1.id)} 
+                                    {tradeShift1.targetDateStr && <span className="ml-2">({tradeShift1.targetDateStr})</span>}
                                 </div>
                                 <form onSubmit={handleCreateTrade} className="space-y-4">
                                     <div>
@@ -1560,8 +1618,22 @@
                                             ))}
                                         </select>
                                     </div>
+                                    
+                                    {tradeShift2Id && tradeShift2Id.startsWith('t') && (
+                                        <div className="mt-3">
+                                            <label className="text-xs font-bold text-gray-500">Vilket datum gäller kollegans pass?</label>
+                                            <input 
+                                                type="date" 
+                                                className="w-full text-base md:text-sm border p-3 md:p-2 rounded mt-1 bg-gray-50" 
+                                                value={tradeShift2Date} 
+                                                onChange={e => setTradeShift2Date(e.target.value)} 
+                                                required 
+                                            />
+                                        </div>
+                                    )}
+
                                     <div className="flex flex-col md:flex-row justify-end md:space-x-2 pt-4 space-y-2 md:space-y-0">
-                                        <button type="button" onClick={() => {setShowTradeModal(false); setTradeShift1(null);}} className="w-full md:w-auto px-4 py-3 md:py-2 text-gray-500 border rounded hover:bg-gray-50">Avbryt</button>
+                                        <button type="button" onClick={() => {setShowTradeModal(false); setTradeShift1(null); setTradeShift2Date('');}} className="w-full md:w-auto px-4 py-3 md:py-2 text-gray-500 border rounded hover:bg-gray-50">Avbryt</button>
                                         <button type="submit" className="w-full md:w-auto bg-blue-600 text-white px-6 py-3 md:py-2 rounded shadow hover:bg-blue-700 font-bold">Skicka förfrågan</button>
                                     </div>
                                 </form>
@@ -1619,7 +1691,6 @@
                                         </select>
                                     </div>
                                     
-                                    {/* Snygga checkbox-knappar för flera dagar */}
                                     <div>
                                         <label className="text-xs font-bold text-gray-500 block mb-1">Välj veckodagar</label>
                                         <div className="flex flex-wrap gap-2">
@@ -1646,7 +1717,6 @@
                                         </div>
                                     </div>
 
-                                    {/* LÅSNING AV RESURS */}
                                     <div className="grid grid-cols-1 gap-2">
                                         <label className="text-xs font-bold text-gray-500">Tilldelad person</label>
                                         <select 
