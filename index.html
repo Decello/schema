@@ -134,6 +134,7 @@
         };
 
         const INITIAL_USERS = [
+            { id: 'u0', name: 'Daniel', username: 'danield', email: 'daniel@test.se', password: '123', role: 'Superadmin', color: 'bg-purple-50 text-purple-800 border-purple-200' },
             { id: 'u1', name: 'Tommy Larsson', username: 'tommyl', email: 'tommy@test.se', password: '123', role: 'Admin', color: 'bg-indigo-50 text-indigo-800 border-indigo-200' },
             { id: 'u2', name: 'David', username: 'david', email: 'david@test.se', password: '123', role: 'Personal', color: 'bg-blue-50 text-blue-800 border-blue-200' },
             { id: 'u3', name: 'Justina', username: 'justina', email: 'justina@test.se', password: '123', role: 'Personal', color: 'bg-red-50 text-red-800 border-red-200' },
@@ -209,7 +210,10 @@
             useEffect(() => { setSavedData('atla_leaves', leaves); }, [leaves]);
 
             const [currentUser, setCurrentUser] = useState(null); 
-            const isAdmin = currentUser && currentUser.role === 'Admin';
+            
+            const isSuperAdmin = currentUser && currentUser.role === 'Superadmin';
+            const isAdmin = currentUser && (currentUser.role === 'Admin' || currentUser.role === 'Superadmin');
+            
             const [loginData, setLoginData] = useState({ username: '', password: '' });
             const [loginError, setLoginError] = useState('');
             
@@ -376,7 +380,6 @@
                 if(!isAdmin) return;
                 
                 if (shiftId.startsWith('t')) {
-                    // Dölj mall-passet temporärt för detta datum
                     const hideShift = { 
                         id: generateUniqueId('a'), 
                         dateStr: dateStr, 
@@ -395,7 +398,6 @@
                 try {
                     if(!editingShift || !editingShift.userId) return;
 
-                    // Om vi redigerar ett mall-pass IFRÅN kalendern (targetDateStr finns)
                     if (editingShift.id.startsWith('t') && editingShift.targetDateStr) {
                         const overrideShift = {
                             id: generateUniqueId('a'),
@@ -410,12 +412,10 @@
                         setActualShifts([...(actualShifts || []), overrideShift]);
                         addLog("Tillfällig ändring", `Ny tid/resurs för ${editingShift.targetDateStr}`);
                     } 
-                    // Vanliga kalenderpass
                     else if (editingShift.isExtra || editingShift.id.startsWith('a')) { 
                         setActualShifts((actualShifts || []).map(s => s && s.id === editingShift.id ? editingShift : s)); 
                         addLog("Redigerade kalenderpass", `Ny tid/resurs sparat.`);
                     } 
-                    // Permanenta ändringar (via Rullschema)
                     else { 
                         const hasConflict = (templateShifts || []).some(s => s && s.id !== editingShift.id && s.userId === editingShift.userId && s.cycleWeek === editingShift.cycleWeek && s.dayOfWeek === editingShift.dayOfWeek);
                         if (hasConflict) { alert("Krock! Personen har redan ett pass på denna dag i rullschemat."); return; }
@@ -553,7 +553,6 @@
                 if(!isAdmin) return;
                 const s = (templateShifts || []).find(x => x && x.id === id);
                 setTemplateShifts((templateShifts || []).filter(x => x && x.id !== id)); 
-                // Kaskad: Rensa byten kopplade till detta pass
                 setTradeRequests((tradeRequests || []).filter(r => r && r.shift1Id !== id && r.shift2Id !== id));
                 if(s) addLog("Raderade mall-pass", `Resurs: ${(users || []).find(u=>u&&u.id===s.userId)?.name || 'Okänd'}, V${s.cycleWeek} ${dayNamesShort[(s.dayOfWeek||1)-1]}, ${s.start}-${s.end}`);
             };
@@ -711,13 +710,11 @@
 
             const currentWeekNum = getWeekNumber(currentWeekStart);
             
-            // --- NY LOGIK FÖR AKTIV RULLVECKA (SÄKRAD MOT ÅRSSKIFTEN) ---
             const currentMonday = new Date(currentWeekStart);
             const currentMondayDayNum = currentMonday.getDay() || 7; 
             currentMonday.setDate(currentMonday.getDate() - currentMondayDayNum + 1);
             currentMonday.setHours(0, 0, 0, 0);
 
-            // Vi sätter måndagen den 20 maj 2024 som fast ankarpunkt (start på Vecka 1)
             const anchorMonday = new Date(2024, 4, 20); 
             anchorMonday.setHours(0, 0, 0, 0);
 
@@ -726,7 +723,6 @@
             const diffWeeks = Math.floor(diffDays / 7);
 
             const activeCycleWeek = ((diffWeeks % cycleWeeks) + cycleWeeks) % cycleWeeks + 1;
-            // --- SLUT PÅ NY LOGIK ---
 
             const weekDays = Array.from({ length: 7 }).map((_, i) => {
                 const d = new Date(currentWeekStart);
@@ -780,7 +776,7 @@
                                 </div>
                             )}
 
-                            <div className="mt-6 text-xs text-gray-400 text-center border-t pt-4"><p>Testkonton (Lösenord: 123):</p><p>Admin: tommyl | Personal: david, justina</p></div>
+                            <div className="mt-6 text-xs text-gray-400 text-center border-t pt-4"><p>Testkonton (Lösenord: 123):</p><p>Superadmin: danield | Admin: tommyl | Personal: david, justina</p></div>
                             <div className="mt-8 text-center"><button onClick={() => {if(confirm("Är du helt säker? All data i webbläsaren kommer att raderas och återställas till fabriksinställning.")){localStorage.clear(); window.location.reload();}}} className="text-[10px] text-red-300 hover:text-red-500 underline">Nödknapp: Nollställ all data (vid tekniskt fel)</button></div>
                         </div>
                     </div>
@@ -1363,9 +1359,10 @@
                                                     <div className="text-[10px] md:text-xs text-gray-400 truncate">@{u.username} | {u.email || 'Ingen e-post'}</div>
                                                 </div>
                                             </div>
+                                            
                                             <div className="flex items-center space-x-2 md:space-x-4 pl-2">
-                                                <span className="px-2 py-1 md:px-3 rounded-full text-[9px] md:text-[10px] font-bold border bg-gray-50 text-gray-500">{(u.role||'PERSONAL').toUpperCase()}</span>
-                                                {u.id !== currentUser.id && ( 
+                                                <span className={`px-2 py-1 md:px-3 rounded-full text-[9px] md:text-[10px] font-bold border ${u.role === 'Superadmin' ? 'bg-purple-50 border-purple-200 text-purple-700' : u.role === 'Admin' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-gray-50 text-gray-500'}`}>{(u.role||'PERSONAL').toUpperCase()}</span>
+                                                {u.id !== currentUser.id && u.role !== 'Superadmin' && ( 
                                                     <button onClick={() => { 
                                                         if(confirm("Är du säker på att du vill radera resursen och all dess tillhörande data? Detta kan inte ångras.")) {
                                                             setUsers((users||[]).filter(user => user && user.id !== u.id)); 
@@ -1561,7 +1558,7 @@
                                     <div><label className="text-xs font-bold text-gray-500">Användarnamn</label><input type="text" className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} required /></div>
                                     <div><label className="text-xs font-bold text-gray-500">E-postadress</label><input type="email" className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newUser.email} onChange={e => setNewUser({...newUser, email: e.target.value})} required /></div>
                                     <div><label className="text-xs font-bold text-gray-500">Start-lösenord (minst 3 tecken)</label><input type="text" minLength="3" className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newUser.password} onChange={e => setNewUser({...newUser, password: e.target.value})} required /></div>
-                                    <div><label className="text-xs font-bold text-gray-500">Roll</label><select className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newUser.role} onChange={e => setNewUser({...newUser, role: e.target.value})}><option value="Personal">Personal</option><option value="Admin">Admin</option></select></div>
+                                    <div><label className="text-xs font-bold text-gray-500">Roll</label><select className="w-full text-base border p-3 md:p-2 rounded mt-1" value={newUser.role} onChange={e => setNewUser({...newUser, role: e.target.value})}><option value="Personal">Personal</option><option value="Admin">Admin</option>{isSuperAdmin && <option value="Superadmin">Superadmin</option>}</select></div>
                                     <div className="flex flex-col md:flex-row justify-end md:space-x-2 pt-4 space-y-2 md:space-y-0"><button type="button" onClick={() => setShowUserModal(false)} className="w-full md:w-auto px-4 py-3 md:py-2 text-gray-500 border rounded hover:bg-gray-50">Avbryt</button><button type="submit" className="w-full md:w-auto bg-indigo-600 text-white px-6 py-3 md:py-2 rounded font-bold">Skapa resurs</button></div>
                                 </form>
                             </div>
