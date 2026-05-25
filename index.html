@@ -813,9 +813,8 @@
                 return { name: d.toLocaleDateString('sv-SE', { weekday: 'short' }).toUpperCase(), date: d.getDate(), dayNum: i + 1, fullDateStr: formatDateStr(d), dateObj: d };
             });
 
-            // --- SKAPA AKTUELL TIDPUNKT FÖR JÄMFÖRELSE ---
+            // --- ROBUST KLOCK-KONTROLL ---
             const nu = new Date();
-            const aktuellTidStr = `${formatDateStr(nu)} ${String(nu.getHours()).padStart(2, '0')}:${String(nu.getMinutes()).padStart(2, '0')}`;
 
             let availableTradeShifts = [];
             if (showTradeModal && tradeShift1) {
@@ -830,10 +829,12 @@
                     });
 
                     [...tShifts, ...aShifts].forEach(shift => {
-                        // Kontrollera om passet är i framtiden (passet datum + starttid jämfört med nu)
-                        const passTidStr = `${day.fullDateStr} ${shift.start || '00:00'}`;
+                        // Skapa ett riktigt datum-objekt för passets starttid för att undvika sträng-jämförelse-buggar
+                        const [startH, startM] = (shift.start || '00:00').split(':').map(Number);
+                        const passDateTime = new Date(day.dateObj.getFullYear(), day.dateObj.getMonth(), day.dateObj.getDate(), startH, startM, 0);
                         
-                        if (passTidStr > aktuellTidStr) {
+                        // Jämför passets tid med datorns aktuella tid
+                        if (passDateTime > nu) {
                             if (shift.userId !== currentUser.id && !isUserOnLeave(shift.userId, day.fullDateStr)) {
                                 availableTradeShifts.push({
                                     ...shift,
@@ -1055,8 +1056,10 @@
                                                         const user = (users||[]).find(u => u && u.id === shift.userId);
                                                         const isMyShift = currentUser.id === shift.userId;
                                                         
-                                                        const passTidStr = `${day.fullDateStr} ${shift.start || '00:00'}`;
-                                                        const isPastShift = passTidStr < aktuellTidStr;
+                                                        // Tids-säker kontroll om passet redan har börjat/passerat
+                                                        const [startH, startM] = (shift.start || '00:00').split(':').map(Number);
+                                                        const passDateTime = new Date(day.dateObj.getFullYear(), day.dateObj.getMonth(), day.dateObj.getDate(), startH, startM, 0);
+                                                        const isPastShift = passDateTime < nu;
 
                                                         return (
                                                             <div key={shift.id} className={`p-3 rounded border-l-4 relative group ${user?.color || 'bg-gray-50 border-gray-300'}`}>
@@ -1709,6 +1712,7 @@
                                         </select>
                                     </div>
                                     
+                                    {/* Snygga checkbox-knappar för flera dagar */}
                                     <div>
                                         <label className="text-xs font-bold text-gray-500 block mb-1">Välj veckodagar</label>
                                         <div className="flex flex-wrap gap-2">
